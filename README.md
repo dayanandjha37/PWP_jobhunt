@@ -124,6 +124,35 @@ python -m jobhunt run --no-draft         # screen only, skip the expensive pass
 
 ---
 
+## Apply from the browser
+
+The digest tells you *what*; the UI is where you actually *apply*:
+
+```bash
+python -m jobhunt ui            # http://127.0.0.1:8765, opens itself
+python -m jobhunt ui --user piyush --port 9000
+```
+
+One dark page (same palette as the digest) with, per user:
+
+- **To apply / Applied / All** — everything above your `score_threshold` that
+  you haven't applied to yet, sorted best-first
+- each card shows the full kit: why it fits, resume bullets, honest gaps,
+  the cover note as an **editable** textarea (edits save back to `seen.json`),
+  and questions to ask
+- **Copy** buttons for the note and bullets, **Open & apply →** to the posting,
+  **Mark applied** (with undo) to keep the tracker honest
+- **Run pipeline** / **Offline dry run** buttons kick off `run-all --user …`
+  in the background and stream its output; the list refreshes when it finishes
+
+Stdlib only (`http.server`, no new dependency) and bound to `127.0.0.1` — it
+can read your configs and start runs, so it never listens on the network.
+
+Draft kits are persisted into `seen.json` from the first run after this UI
+landed; older entries still show score + reason, just no kit.
+
+---
+
 ## Picking providers
 
 Screening reads hundreds of jobs and wants the cheapest decent model. Drafting
@@ -207,10 +236,12 @@ jobhunt/
   mailer.py      SMTP
   store.py       seen.json dedupe + tracker + CSV export
   mock.py        fixtures in each ATS's native JSON shape
-  cli.py         argparse: profile / run / applied / stats
+  server.py      local web UI (stdlib http.server, 127.0.0.1 only)
+  page.py        the UI page: one static HTML string, no build step
+  cli.py         argparse: profile / run / run-all / ui / applied / stats
 config.yaml      filters, thresholds, paths
 companies.yaml   boards to poll
-tests/           55 tests, no network, no key
+tests/           89 tests, no network, no key
 ```
 
 HTTP is kept out of the parsers on purpose. Each `parse_*(slug, company, body)`

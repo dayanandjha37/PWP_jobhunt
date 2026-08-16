@@ -14,14 +14,16 @@ from pathlib import Path
 import yaml
 
 from . import digest as digest_mod
-from . import llm, mailer
+from . import ingest, llm, mailer
 from .fetch import fetch_all
 from .mock import fetch_all_mock
 from .prefilter import prefilter
 from .providers import LLMError, resolve
 from .store import Store
+from .userenv import env_scope, parse_env_file
 
 ROOT = Path(__file__).resolve().parent.parent
+USERS_DIR = ROOT / "users"
 
 
 def _load_env(path: str = ".env") -> None:
@@ -43,44 +45,109 @@ def _cfg(path: str | Path) -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
-def _load_profile(cfg: dict, allow_sample: bool) -> dict | None:
-    path = Path(cfg.get("profile_file", "profile.json"))
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+RESUME_SUFFIXES = (".pdf", ".txt", ".md")
 
-    sample = ROOT / "profile.example.json"
-    if allow_sample and sample.exists():
-        print(f"  ! {path} missing — using {sample.name} for this dry run.")
-        print("    Build the real one: python -m jobhunt profile --resume resume.pdf")
-        return json.loads(sample.read_text(encoding="utf-8"))
 
-    print(f"missing {path} — run `python -m jobhunt profile --resume <file>` first")
+def _find_resume(cfg: dict) -> Path | None:
+    """Locate the user's resume: cfg resume_file if set, else resume.* in cwd."""
+    name = cfg.get("resume_file")
+    if name:
+        p = Path(name)
+        return p if p.exists() else None
+    for p in sorted(Path.cwd().glob("resume.*")):
+        if p.suffix.lower() in RESUME_SUFFIXES:
+            return p
     return None
 
 
-# ------------------------------------------------------------------ profile --
-def cmd_profile(args) -> int:
-    src = Path(args.resume)
-    if not src.exists():
-        print(f"resume not found: {src}")
-        return 1
+def _build_profile(src: Path, out: Path) -> dict | None:
+    """Resume file -> profile dict, written to `out`. Uses the scoped env,
+    so under run-all this is the current user's key, not the root one."""
     is_pdf = src.suffix.lower() == ".pdf"
-
     try:
         provider, model = resolve("draft")
-        print(f"reading {src.name} via {provider.name}/{model} ...")
+        print(f"  building profile from {src.name} via {provider.name}/{model} ...")
         profile = llm.build_profile(
             resume_bytes=src.read_bytes() if is_pdf else None,
             resume_text=None if is_pdf else src.read_text(encoding="utf-8", errors="replace"),
             is_pdf=is_pdf, provider=provider, model=model,
         )
     except (LLMError, ValueError) as e:
-        print(f"profile extraction failed: {e}")
-        return 1
+        print(f"  ! profile build failed: {e}")
+        return None
+    out.write_text(json.dumps(profile, indent=2, ensure_ascii=False),
+                   encoding="utf-8")
+    print(f"  wrote {out}")
+    return profile
 
-    Path(args.out).write_text(json.dumps(profile, indent=2, ensure_ascii=False),
-                              encoding="utf-8")
-    print(f"wrote {args.out}\n")
+
+def _load_profile(cfg: dict, allow_sample: bool) -> dict | None:
+    path = Path(cfg.get("profile_file", "profile.json"))
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    resume = _find_resume(cfg)
+    if resume is not None:
+        if allow_sample:  # --mock stays offline; the real run builds it
+            print(f"  ! {path} missing — resume found at {resume.name}, this dry run "
+                  f"uses the sample profile; the first real run builds yours.")
+        else:
+            return _build_profile(resume, path)
+
+    sample = ROOT / "profile.example.json"
+    if allow_sample and sample.exists():
+        print(f"  ! {path} missing — using {sample.name} for this dry run.")
+        print("    Build the real one: drop resume.pdf into the user directory, or")
+        print("    python -m jobhunt profile --resume <file> --out <user>/profile.json")
+        return json.loads(sample.read_text(encoding="utf-8"))
+
+    print(f"missing {path} — drop a resume (resume.pdf/.txt/.md) next to the user's "
+          f"config.yaml, or run `python -m jobhunt profile --resume <file>` first")
+    return None
+
+
+# ------------------------------------------------------------------ profile --
+def cmd_profile(args) -> int:
+    if not args.user:
+        if not args.resume:
+            print("--resume is required (or use --user <name>)")
+            return 1
+        src = Path(args.resume)
+        if not src.exists():
+            print(f"resume not found: {src}")
+            return 1
+        profile = _build_profile(src, Path(args.out or "profile.json"))
+        if profile is None:
+            return 1
+        print(json.dumps(profile, indent=2, ensure_ascii=False)[:900])
+        return 0
+
+    u = USERS_DIR / args.user
+    if not u.is_dir():
+        print(f"no user directory: {u}")
+        return 1
+    cfg_path = u / "config.yaml"
+    cfg = _cfg(cfg_path) if cfg_path.exists() else {}
+    out = Path(args.out) if args.out else Path(cfg.get("profile_file", "profile.json"))
+    src = Path(args.resume) if args.resume else None
+
+    profile = None
+    prev_cwd = os.getcwd()
+    try:
+        # user-relative paths (resume.*, profile_file) resolve inside user dir
+        os.chdir(u)
+        if src is None:
+            src = _find_resume(cfg)
+        if src is None or not src.exists():
+            print(f"no resume found in {u} — drop resume.pdf/.txt/.md there, "
+                  f"or pass --resume <file>")
+            return 1
+        with env_scope(parse_env_file(u / ".env")):
+            profile = _build_profile(src, out)
+    finally:
+        os.chdir(prev_cwd)
+    if profile is None:
+        return 1
     print(json.dumps(profile, indent=2, ensure_ascii=False)[:900])
     return 0
 
@@ -104,9 +171,18 @@ def cmd_run(args) -> int:
             print("companies.yaml has no entries")
             return 1
         jobs = fetch_all(companies)
+
+    # jobs exported by the Indeed scraper (file drop into inbox/)
+    inbox_dir = cfg.get("inbox_dir")
+    if inbox_dir:
+        inbox_jobs = ingest.load_inbox(inbox_dir)
+        if inbox_jobs:
+            print(f"  inbox: imported {len(inbox_jobs)} job(s) from {inbox_dir}")
+        jobs = jobs + inbox_jobs
+
     scanned = len(jobs)
     if not scanned:
-        print("no postings fetched — check the slugs in companies.yaml")
+        print("no postings fetched — check the slugs in companies.yaml / the inbox dir")
         return 1
 
     # ---- 2. prefilter + dedupe (deterministic, free, no LLM)
@@ -199,7 +275,70 @@ def cmd_run(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- run-all --
+def cmd_run_all(args) -> int:
+    """Run the pipeline for every user in users/*/, sequentially.
+
+    Each user dir holds its own config.yaml + .env; env vars are applied
+    scoped (override, then restore) so one user's API key never leaks into
+    the next run. One user failing never aborts the sweep.
+    """
+    if not USERS_DIR.is_dir():
+        print(f"no users/ directory at {USERS_DIR} — nothing to run")
+        return 1
+    if args.user:
+        users = [USERS_DIR / args.user]
+    else:
+        users = sorted(d for d in USERS_DIR.iterdir() if d.is_dir())
+    if not users:
+        print("no user directories found")
+        return 1
+
+
+
+
+    failed: list[str] = []
+    for u in users:
+        print(f"\n{'=' * 60}\nuser: {u.name}\n{'=' * 60}")
+        cfg_path = u / "config.yaml"
+        if not cfg_path.exists():
+            print(f"  ! {cfg_path} missing — skipped")
+            failed.append(u.name)
+            continue
+        run_args = argparse.Namespace(
+            config=str(cfg_path), mock=args.mock, scorer=args.scorer,
+            no_draft=args.no_draft, send=args.send, limit=args.limit,
+        )
+        prev_cwd = os.getcwd()
+        try:
+            # user config paths are relative to the user dir, not the root
+            os.chdir(u)
+            with env_scope(parse_env_file(u / ".env")):
+                rc = cmd_run(run_args)
+        except Exception as e:  # never abort the sweep
+            print(f"  ! crashed ({type(e).__name__}: {e}) — continuing")
+            rc = 1
+        finally:
+            os.chdir(prev_cwd)
+        if rc != 0:
+            failed.append(u.name)
+        print(f"\nuser {u.name}: {'FAILED' if rc else 'ok'}")
+
+    print(f"\n{'=' * 60}\nrun-all: {len(users) - len(failed)}/{len(users)} ok"
+          + (f", failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
 # ------------------------------------------------------------------- misc --
+def cmd_ui(args) -> int:
+    """Local web UI: review drafts, edit notes, mark applied, start runs;
+    upload a resume, build/edit profile.json, edit the user's .env."""
+    from .server import serve  # deferred: only the UI needs http.server
+    serve(port=args.port, default_user=args.user,
+          open_browser=not args.no_open)
+    return 0
+
+
 def cmd_applied(args) -> int:
     store = Store(_cfg(args.config).get("seen_file", "seen.json"))
     ok = store.mark_applied(args.job_id)
@@ -224,8 +363,11 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("profile", help="turn a resume into profile.json")
-    sp.add_argument("--resume", required=True, help="path to a .pdf, .txt or .md resume")
-    sp.add_argument("--out", default="profile.json")
+    sp.add_argument("--resume", help="path to a .pdf, .txt or .md resume")
+    sp.add_argument("--out", help="output path (default: profile.json, or the "
+                                  "user's configured profile_file with --user)")
+    sp.add_argument("--user", help="build for this user under users/: their .env "
+                                   "key, their resume.*, their profile.json")
     sp.set_defaults(func=cmd_profile)
 
     sr = sub.add_parser("run", help="run the daily pipeline")
@@ -237,6 +379,23 @@ def main(argv=None) -> int:
     sr.add_argument("--send", action="store_true", help="actually email the digest")
     sr.add_argument("--limit", type=int, help="cap jobs sent to the LLM (cost guard)")
     sr.set_defaults(func=cmd_run)
+
+    ra = sub.add_parser("run-all", help="run the pipeline for every user in users/")
+    ra.add_argument("--mock", action="store_true", help="bundled fixtures, no network")
+    ra.add_argument("--scorer", choices=["llm", "keyword", "claude"], default="llm",
+                    help="keyword = offline stub, needs no API key")
+    ra.add_argument("--no-draft", action="store_true", help="skip the expensive stage")
+    ra.add_argument("--send", action="store_true", help="actually email the digest")
+    ra.add_argument("--limit", type=int, help="cap jobs sent to the LLM (cost guard)")
+    ra.add_argument("--user", help="run only this user (directory name under users/)")
+    ra.set_defaults(func=cmd_run_all)
+
+    su = sub.add_parser("ui", help="local web UI: review drafts, mark applied")
+    su.add_argument("--port", type=int, default=8765)
+    su.add_argument("--user", help="open with this user preselected")
+    su.add_argument("--no-open", action="store_true",
+                    help="don't auto-open the browser")
+    su.set_defaults(func=cmd_ui)
 
     sa = sub.add_parser("applied", help="mark a job_id as applied")
     sa.add_argument("job_id")

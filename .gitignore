@@ -32,3 +32,20 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# per-user workspaces under users/ — everything personal lives here
+# (.env keys, resume, profile.json, seen.json, out/, inbox job exports).
+# Only the sample scaffold ships; real users are created by copying it.
+users/*
+!users/sample/
+# runtime data even inside the scaffold user
+users/sample/inbox/
+users/sample/out/
+users/sample/.env
+users/sample/seen.json
+users/sample/profile.json
+users/sample/resume.*
+
+# local agent/tool state
+.claude/settings.local.json
+.codebase-memory/
