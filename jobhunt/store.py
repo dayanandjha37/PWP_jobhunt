@@ -33,6 +33,7 @@ class Store:
                 "url": j.url,
                 "score": j.score,
                 "reason": j.reason,
+                "draft": j.draft or {},
                 "emailed": emailed,
                 "applied": False,
                 "applied_on": None,
@@ -44,6 +45,24 @@ class Store:
             return False
         self.data[job_id]["applied"] = True
         self.data[job_id]["applied_on"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.save()
+        return True
+
+    def unmark_applied(self, job_id: str) -> bool:
+        """Undo a misclick in the UI."""
+        if job_id not in self.data:
+            return False
+        self.data[job_id]["applied"] = False
+        self.data[job_id]["applied_on"] = None
+        self.save()
+        return True
+
+    def set_cover_note(self, job_id: str, text: str) -> bool:
+        """Persist an edited cover note (the UI's textarea writes back here)."""
+        if job_id not in self.data:
+            return False
+        row = self.data[job_id]
+        row.setdefault("draft", {})["cover_note"] = text
         self.save()
         return True
 
