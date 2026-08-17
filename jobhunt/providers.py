@@ -183,9 +183,9 @@ class OpenAICompatProvider(Provider):
     """Anything speaking /chat/completions - Groq, Together, OpenRouter, vLLM."""
 
     name = "openai-compatible"
-    required_env = "GROQ_API_KEY"
+    required_env = "LLM_API_KEY"
     default_base = "https://api.groq.com/openai/v1"
-    key_env = "GROQ_API_KEY"
+    key_env = "LLM_API_KEY"
 
     def complete(self, model: str, system: str, user: str, max_tokens: int,
                  json_mode: bool = False) -> str:
@@ -212,6 +212,8 @@ class OpenAICompatProvider(Provider):
 
 class GroqProvider(OpenAICompatProvider):
     name = "groq"
+    required_env = "GROQ_API_KEY"
+    key_env = "GROQ_API_KEY"
 
 
 class OllamaProvider(Provider):

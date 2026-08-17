@@ -66,6 +66,13 @@ careers board:
 | `boards.greenhouse.io/stripe` | `greenhouse` | `stripe` |
 | `jobs.lever.co/netlify` | `lever` | `netlify` |
 | `jobs.ashbyhq.com/ramp` | `ashby` | `ramp` |
+| `jobs.smartrecruiters.com/Experian` | `smartrecruiters` | `Experian` |
+
+SmartRecruiters slugs are the company id in
+`https://api.smartrecruiters.com/v1/companies/<Slug>/postings` — case-sensitive
+and not guessable from the domain (Boards' `Bosch` is not `bosch`). SmartRecruiters
+boards also paginate and need one extra request per posting for the JD, so the
+fetcher detail-fetches engineering-looking titles only, capped at 150 per board.
 
 The shipped list is **examples** — verify each before trusting the output.
 Companies migrate between ATS vendors and slugs go dead. A dead slug prints an
@@ -113,6 +120,19 @@ are the fallback for providers that can't take documents.
 This writes `profile.json`. It's gitignored — read it, fix anything the model
 got wrong, and keep it out of version control.
 
+The same build retunes the config: `include_titles`, `exclude_titles` and
+`locations` in `config.yaml` are regenerated from the resume (target titles,
+seniority, location), so a QA engineer's filters no longer ship
+software-developer defaults. Hand edits stick until the next
+`jobhunt profile` run overwrites them; everything else in the config is
+never touched.
+
+### Boards are shared, configs are per-user
+
+The root `companies.yaml` is the master boards list — every user under
+`users/` polls it. A user gets their own list only by creating
+`users/<name>/companies.yaml`; drop or edit that file to go back to shared.
+
 ### 4. Run it
 
 ```bash
@@ -121,6 +141,35 @@ python -m jobhunt run --send             # ...and email it
 python -m jobhunt run --limit 10         # cost guard while tuning
 python -m jobhunt run --no-draft         # screen only, skip the expensive pass
 ```
+
+---
+
+## Apply from the browser
+
+The digest tells you *what*; the UI is where you actually *apply*:
+
+```bash
+python -m jobhunt ui            # http://127.0.0.1:8765, opens itself
+python -m jobhunt ui --user piyush --port 9000
+```
+
+One dark page (same palette as the digest) with, per user:
+
+- **To apply / Applied / All** — everything above your `score_threshold` that
+  you haven't applied to yet, sorted best-first
+- each card shows the full kit: why it fits, resume bullets, honest gaps,
+  the cover note as an **editable** textarea (edits save back to `seen.json`),
+  and questions to ask
+- **Copy** buttons for the note and bullets, **Open & apply →** to the posting,
+  **Mark applied** (with undo) to keep the tracker honest
+- **Run pipeline** / **Offline dry run** buttons kick off `run-all --user …`
+  in the background and stream its output; the list refreshes when it finishes
+
+Stdlib only (`http.server`, no new dependency) and bound to `127.0.0.1` — it
+can read your configs and start runs, so it never listens on the network.
+
+Draft kits are persisted into `seen.json` from the first run after this UI
+landed; older entries still show score + reason, just no kit.
 
 ---
 
@@ -142,7 +191,7 @@ DRAFT_MODEL=claude-sonnet-5
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | yes | default; uses the official SDK |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | yes | generous free tier |
 | Groq | `groq` | `GROQ_API_KEY` | no | very fast, free tier |
-| OpenAI-compatible | `openai-compatible` | `GROQ_API_KEY` + `LLM_BASE_URL` | no | Together, OpenRouter, vLLM |
+| OpenAI-compatible | `openai-compatible` | `LLM_API_KEY` + `LLM_BASE_URL` | no | GLM (Z.ai), Together, OpenRouter, vLLM |
 | Ollama | `ollama` | none | no | fully local, `OLLAMA_HOST` |
 
 Everything except Anthropic goes over plain `requests`, so you can delete the
@@ -180,12 +229,12 @@ Repository **secrets** to set (Settings → Secrets and variables → Actions):
 | Secret | What |
 |---|---|
 | `PROFILE_JSON` | the entire contents of your local `profile.json` |
-| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY`) |
+| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY` / `LLM_API_KEY`) |
 | `SMTP_USER` / `SMTP_PASS` | Gmail address + **App Password**, not your login |
 | `MAIL_TO` | where the digest goes |
 
 Optional repository **variables**: `LLM_PROVIDER`, `SCREEN_PROVIDER`,
-`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`.
+`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`, `LLM_BASE_URL`.
 
 Trigger it by hand first — Actions → *daily job digest* → *Run workflow*, with
 `dry_run` ticked to build the digest artifact without emailing.
@@ -201,16 +250,19 @@ normal password stops working once 2FA is on.
 jobhunt/
   fetch.py       Job dataclass, strip_html, 3 pure parsers, fetch_all
   prefilter.py   title/location/freshness gate — no LLM, no cost
+  filtergen.py   resume -> config.yaml filters (rewritten on profile build)
   providers.py   the swappable provider interface + 5 backends
   llm.py         screen() / draft() / build_profile() / keyword stub
   digest.py      HTML email (inline CSS only — Gmail strips <style>)
   mailer.py      SMTP
   store.py       seen.json dedupe + tracker + CSV export
   mock.py        fixtures in each ATS's native JSON shape
-  cli.py         argparse: profile / run / applied / stats
+  server.py      local web UI (stdlib http.server, 127.0.0.1 only)
+  page.py        the UI page: one static HTML string, no build step
+  cli.py         argparse: profile / run / run-all / ui / applied / stats
 config.yaml      filters, thresholds, paths
-companies.yaml   boards to poll
-tests/           55 tests, no network, no key
+companies.yaml   shared boards list — master for every users/<name>/ workspace
+tests/           138 tests, no network, no key
 ```
 
 HTTP is kept out of the parsers on purpose. Each `parse_*(slug, company, body)`

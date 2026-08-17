@@ -1,0 +1,34 @@
+# Per-user workspace config. All paths are relative to THIS directory
+# (run-all chdirs here before running), so users are fully isolated.
+#
+# This is a scaffold user: `python -m jobhunt run-all --mock --scorer keyword`
+# exercises it offline. Copy it, rename, fill in real values, delete when done.
+
+filters:
+  include_titles:
+    - '\b(software|backend|java|platform|systems|cloud)\b.*\b(engineer|developer)\b'
+    - '\bsde\b'
+    - 'software engineer'
+  exclude_titles:
+    - '\b(staff|principal|architect)\b'
+    - '\b(senior|manager|director|head of)\b'
+    - '\b(intern|internship)\b'
+  locations:
+    - bangalore
+    - bengaluru
+    - india
+  allow_remote: true
+  max_age_days: 30
+
+# files (per-user, except the boards list: companies_file falls back to the
+# shared root companies.yaml when this directory has no copy of its own)
+profile_file: profile.json
+seen_file: seen.json
+digest_file: out/digest.html
+tracker_csv: out/tracker.csv
+companies_file: companies.yaml   # per-user override; absent -> shared root list
+inbox_dir: inbox          # Indeed export lands here; consumed files -> inbox/archive
+
+# screening
+score_threshold: 7.0
+max_per_digest: 5

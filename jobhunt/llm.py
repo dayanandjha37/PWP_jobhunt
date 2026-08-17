@@ -15,7 +15,13 @@ import re
 from typing import Any
 
 from .fetch import Job
-from .providers import LLMError, Provider, resolve
+from .providers import LLMError, Provider, UnsupportedDocument, resolve
+
+
+def _profile_from_text(provider: Provider, model: str, resume_text: str) -> str:
+    return provider.complete(
+        model, "", f"{PROFILE_PROMPT}\n\n--- RESUME ---\n{resume_text}",
+        PROFILE_MAX_TOKENS, json_mode=True)
 
 _FENCE_OPEN = re.compile(r"^\s*```(?:json|JSON)?\s*", re.M)
 _FENCE_CLOSE = re.compile(r"\s*```\s*$", re.M)
@@ -87,6 +93,9 @@ Return ONLY a JSON object, no prose, no markdown fences:
   "notable_projects": [str],   // one line each, with impact if stated
   "education": str,
   "target_titles": [str],      // roles this person should realistically aim at
+  "locations": [str],          // city/region from the address block or stated
+                               // preferences — where they can work (e.g. "Noida",
+                               // "India"); [] if the resume says nothing
   "seniority": str             // intern | new-grad | junior | mid | senior | staff
 }"""
 
@@ -102,15 +111,20 @@ def build_profile(resume_bytes: bytes | None = None, resume_text: str | None = N
         try:
             raw = provider.complete_document(
                 model, PROFILE_PROMPT, resume_bytes, PROFILE_MAX_TOKENS)
+        except UnsupportedDocument as e:
+            if not resume_text:  # no locally extracted text to fall back to
+                raise LLMError(
+                    f"{e}\nTip: export your resume to .txt and re-run, or set "
+                    f"DRAFT_PROVIDER=anthropic|gemini for PDF support."
+                ) from e
+            raw = _profile_from_text(provider, model, resume_text)
         except LLMError as e:
             raise LLMError(
                 f"{e}\nTip: export your resume to .txt and re-run, or set "
                 f"DRAFT_PROVIDER=anthropic|gemini for PDF support."
             ) from e
     else:
-        raw = provider.complete(
-            model, "", f"{PROFILE_PROMPT}\n\n--- RESUME ---\n{resume_text or ''}",
-            PROFILE_MAX_TOKENS, json_mode=True)
+        raw = _profile_from_text(provider, model, resume_text or "")
 
     profile = parse_json(raw)
     if not isinstance(profile, dict):

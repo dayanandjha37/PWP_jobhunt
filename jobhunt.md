@@ -134,3 +134,5 @@ Start by getting `python -m jobhunt run --mock --scorer keyword` green
 end-to-end, then wire the real LLM calls, then the scheduler. Show me the
 prefilter counts at each stage as it runs — I want to see "2000 → 40 → 5" on
 screen for the video.
+
+
