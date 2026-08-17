@@ -20,12 +20,13 @@ filters:
   allow_remote: true
   max_age_days: 30
 
-# files (per-user isolation — nothing shared at run time)
+# files (per-user, except the boards list: companies_file falls back to the
+# shared root companies.yaml when this directory has no copy of its own)
 profile_file: profile.json
 seen_file: seen.json
 digest_file: out/digest.html
 tracker_csv: out/tracker.csv
-companies_file: companies.yaml
+companies_file: companies.yaml   # per-user override; absent -> shared root list
 inbox_dir: inbox          # Indeed export lands here; consumed files -> inbox/archive
 
 # screening

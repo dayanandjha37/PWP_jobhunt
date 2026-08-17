@@ -123,20 +123,105 @@ def parse_ashby(slug: str, company: str, body: Any) -> list[Job]:
     return out
 
 
+def parse_smartrecruiters(slug: str, company: str, body: Any) -> list[Job]:
+    out = []
+    for j in (body or {}).get("content") or []:
+        loc = j.get("location") or {}
+        # fullLocation is pre-joined but leaves blank segments ("Noida, , India");
+        # either way, drop empty parts and rejoin.
+        loc_str = loc.get("fullLocation") or ", ".join(
+            p for p in (loc.get("city"), loc.get("region"), loc.get("country")) if p)
+        loc_str = ", ".join(p.strip() for p in loc_str.split(",") if p.strip())
+        out.append(Job(
+            job_id=f"smartrecruiters:{slug}:{j.get('id')}",
+            ats="smartrecruiters",
+            company=company,
+            title=(j.get("name") or "").strip(),
+            location=loc_str,
+            url=f"https://jobs.smartrecruiters.com/{slug}/{j.get('id')}",
+            description="",  # JD lives on the per-posting endpoint, see below
+            posted_at=j.get("releasedDate") or j.get("createdOn"),
+        ))
+    return out
+
+
+def _smartrecruiters_jd(body: Any) -> str:
+    sections = ((body or {}).get("jobAd") or {}).get("sections") or {}
+    parts = [strip_html((sections.get(k) or {}).get("text"))
+             for k in ("jobDescription", "qualifications", "additionalInformation")]
+    return "\n\n".join(p for p in parts if p)
+
+
 ENDPOINTS = {
     "greenhouse": ("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true", parse_greenhouse),
     "lever":      ("https://api.lever.co/v0/postings/{slug}?mode=json", parse_lever),
     "ashby":      ("https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true", parse_ashby),
 }
 
+SR_LIST = "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100&offset={offset}"
+SR_DETAIL = "https://api.smartrecruiters.com/v1/companies/{slug}/postings/{jid}"
+
+# SmartRecruiters' list endpoint carries no JD text — the description is one
+# extra request per posting, and boards run 500+ postings. Detail-fetch only
+# engineering- or recruiting-looking titles, capped: prefilter still makes the
+# real keep/drop call, this regex is purely request-budget control. Recruiting
+# terms matter for non-engineering users (talent/HR roles screened on an empty
+# JD otherwise).
+SR_DETAIL_TITLE = re.compile(
+    r"\b(software|backend|frontend|full.?stack|platform|infra|devops|sre|"
+    r"site reliability|systems|network|kernel|data|cloud|security|qa|"
+    r"developer|engineer|architect|talent|recruit|sourcer|people|"
+    r"human resources|hr)\b", re.I)
+SR_DETAIL_CAP = 150
+
+
+def fetch_smartrecruiters(slug: str, company: str,
+                          session: requests.Session) -> list[Job]:
+    """SmartRecruiters needs paging + a per-posting detail pass, so it gets its
+    own fetcher instead of the one-shot ENDPOINTS table."""
+    jobs: list[Job] = []
+    offset = 0
+    while True:
+        try:
+            r = session.get(SR_LIST.format(slug=slug, offset=offset),
+                            headers=UA, timeout=TIMEOUT)
+            if r.status_code != 200:
+                print(f"  ! smartrecruiters/{slug} -> HTTP {r.status_code}")
+                return jobs
+            page = r.json()
+        except Exception as e:
+            print(f"  ! smartrecruiters/{slug} -> {type(e).__name__}: {e}")
+            return jobs
+        content = page.get("content") or []
+        jobs.extend(parse_smartrecruiters(slug, company, page))
+        offset += len(content)
+        if not content or offset >= (page.get("totalFound") or 0):
+            break
+        time.sleep(0.2)
+
+    todo = [j for j in jobs if SR_DETAIL_TITLE.search(j.title)][:SR_DETAIL_CAP]
+    for j in todo:
+        jid = j.job_id.rsplit(":", 1)[-1]
+        try:
+            r = session.get(SR_DETAIL.format(slug=slug, jid=jid),
+                            headers=UA, timeout=TIMEOUT)
+            if r.status_code == 200:
+                j.description = _smartrecruiters_jd(r.json())
+        except Exception:
+            pass  # keep the listing; prefilter can still run on title+location
+        time.sleep(0.05)
+    return jobs
+
 
 def fetch_board(ats: str, slug: str, company: str | None = None,
                 session: requests.Session | None = None) -> list[Job]:
     """Hit one company's public board. Returns [] on any failure (never raises)."""
+    sess = session or requests
+    if ats == "smartrecruiters":
+        return fetch_smartrecruiters(slug, company or slug, sess)
     if ats not in ENDPOINTS:
         raise ValueError(f"unknown ATS: {ats}")
     url_tpl, parser = ENDPOINTS[ats]
-    sess = session or requests
     try:
         r = sess.get(url_tpl.format(slug=slug), headers=UA, timeout=TIMEOUT)
         if r.status_code != 200:

@@ -14,6 +14,8 @@ from pathlib import Path
 import yaml
 
 from . import digest as digest_mod
+from . import extract
+from . import filtergen
 from . import ingest, llm, mailer
 from .fetch import fetch_all
 from .mock import fetch_all_mock
@@ -45,7 +47,7 @@ def _cfg(path: str | Path) -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
-RESUME_SUFFIXES = (".pdf", ".txt", ".md")
+RESUME_SUFFIXES = (".pdf", ".docx", ".txt", ".md")
 
 
 def _find_resume(cfg: dict) -> Path | None:
@@ -60,16 +62,38 @@ def _find_resume(cfg: dict) -> Path | None:
     return None
 
 
-def _build_profile(src: Path, out: Path) -> dict | None:
+def _companies_file(cfg: dict) -> Path:
+    """The boards list to poll: the user's own companies_file when present,
+    else the shared root list — one master for everyone, a per-user file
+    only as an override."""
+    p = Path(cfg.get("companies_file", "companies.yaml"))
+    if p.exists():
+        return p
+    shared = ROOT / p.name
+    return shared if shared.exists() else p
+
+
+def _build_profile(src: Path, out: Path, cfg_path: Path | None = None) -> dict | None:
     """Resume file -> profile dict, written to `out`. Uses the scoped env,
-    so under run-all this is the current user's key, not the root one."""
+    so under run-all this is the current user's key, not the root one.
+    With cfg_path, also retunes that config's dynamic filters to the resume."""
     is_pdf = src.suffix.lower() == ".pdf"
+    # Local text extraction: works for every provider, not just the two that
+    # read PDFs natively. A PDF with no text layer still goes as bytes — the
+    # native-PDF providers may salvage a scanned page as an image.
+    try:
+        resume_text = extract.resume_text(src)
+    except extract.ExtractError as e:
+        if not is_pdf:
+            print(f"  ! profile build failed: {e}")
+            return None
+        resume_text = None
     try:
         provider, model = resolve("draft")
         print(f"  building profile from {src.name} via {provider.name}/{model} ...")
         profile = llm.build_profile(
             resume_bytes=src.read_bytes() if is_pdf else None,
-            resume_text=None if is_pdf else src.read_text(encoding="utf-8", errors="replace"),
+            resume_text=resume_text,
             is_pdf=is_pdf, provider=provider, model=model,
         )
     except (LLMError, ValueError) as e:
@@ -78,10 +102,13 @@ def _build_profile(src: Path, out: Path) -> dict | None:
     out.write_text(json.dumps(profile, indent=2, ensure_ascii=False),
                    encoding="utf-8")
     print(f"  wrote {out}")
+    if cfg_path is not None and filtergen.sync_filters(cfg_path, profile):
+        print(f"  tuned filters in {cfg_path.name} from the resume")
     return profile
 
 
-def _load_profile(cfg: dict, allow_sample: bool) -> dict | None:
+def _load_profile(cfg: dict, allow_sample: bool,
+                  cfg_path: Path | None = None) -> dict | None:
     path = Path(cfg.get("profile_file", "profile.json"))
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -92,7 +119,7 @@ def _load_profile(cfg: dict, allow_sample: bool) -> dict | None:
             print(f"  ! {path} missing — resume found at {resume.name}, this dry run "
                   f"uses the sample profile; the first real run builds yours.")
         else:
-            return _build_profile(resume, path)
+            return _build_profile(resume, path, cfg_path=cfg_path)
 
     sample = ROOT / "profile.example.json"
     if allow_sample and sample.exists():
@@ -101,8 +128,8 @@ def _load_profile(cfg: dict, allow_sample: bool) -> dict | None:
         print("    python -m jobhunt profile --resume <file> --out <user>/profile.json")
         return json.loads(sample.read_text(encoding="utf-8"))
 
-    print(f"missing {path} — drop a resume (resume.pdf/.txt/.md) next to the user's "
-          f"config.yaml, or run `python -m jobhunt profile --resume <file>` first")
+    print(f"missing {path} — drop a resume (resume.pdf/.docx/.txt/.md) next to the "
+          f"user's config.yaml, or run `python -m jobhunt profile --resume <file>` first")
     return None
 
 
@@ -139,11 +166,11 @@ def cmd_profile(args) -> int:
         if src is None:
             src = _find_resume(cfg)
         if src is None or not src.exists():
-            print(f"no resume found in {u} — drop resume.pdf/.txt/.md there, "
+            print(f"no resume found in {u} — drop resume.pdf/.docx/.txt/.md there, "
                   f"or pass --resume <file>")
             return 1
         with env_scope(parse_env_file(u / ".env")):
-            profile = _build_profile(src, out)
+            profile = _build_profile(src, out, cfg_path=cfg_path if cfg_path.exists() else None)
     finally:
         os.chdir(prev_cwd)
     if profile is None:
@@ -155,7 +182,7 @@ def cmd_profile(args) -> int:
 # ---------------------------------------------------------------------- run --
 def cmd_run(args) -> int:
     cfg = _cfg(args.config)
-    profile = _load_profile(cfg, allow_sample=args.mock)
+    profile = _load_profile(cfg, allow_sample=args.mock, cfg_path=Path(args.config))
     if profile is None:
         return 1
     store = Store(cfg.get("seen_file", "seen.json"))
@@ -166,7 +193,7 @@ def cmd_run(args) -> int:
     if args.mock:
         jobs = fetch_all_mock()
     else:
-        companies = _cfg(cfg.get("companies_file", "companies.yaml")).get("companies") or []
+        companies = _cfg(_companies_file(cfg)).get("companies") or []
         if not companies:
             print("companies.yaml has no entries")
             return 1
@@ -363,7 +390,7 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("profile", help="turn a resume into profile.json")
-    sp.add_argument("--resume", help="path to a .pdf, .txt or .md resume")
+    sp.add_argument("--resume", help="path to a .pdf, .docx, .txt or .md resume")
     sp.add_argument("--out", help="output path (default: profile.json, or the "
                                   "user's configured profile_file with --user)")
     sp.add_argument("--user", help="build for this user under users/: their .env "

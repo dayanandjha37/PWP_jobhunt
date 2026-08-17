@@ -273,7 +273,7 @@ def test_keyword_screen_stays_in_range_with_an_empty_profile():
 
 ENV_KEYS = ["LLM_PROVIDER", "SCREEN_PROVIDER", "DRAFT_PROVIDER",
             "SCREEN_MODEL", "DRAFT_MODEL", "ANTHROPIC_API_KEY",
-            "GEMINI_API_KEY", "GROQ_API_KEY"]
+            "GEMINI_API_KEY", "GROQ_API_KEY", "LLM_API_KEY", "LLM_BASE_URL"]
 
 
 @pytest.fixture
@@ -322,6 +322,17 @@ def test_blank_key_counts_as_missing(clean_env):
         providers.resolve("screen")
 
 
+def test_openai_compatible_uses_its_own_key_not_groqs(clean_env):
+    clean_env.setenv("LLM_PROVIDER", "openai-compatible")
+    clean_env.setenv("GROQ_API_KEY", "gsk_test")
+    with pytest.raises(LLMError, match="LLM_API_KEY"):
+        providers.resolve("screen")
+
+    clean_env.setenv("LLM_API_KEY", "glm_test")
+    provider, _ = providers.resolve("screen")
+    assert provider.name == "openai-compatible"
+
+
 def test_ollama_needs_no_credentials(clean_env):
     clean_env.setenv("LLM_PROVIDER", "ollama")
     provider, model = providers.resolve("screen")
@@ -352,3 +363,38 @@ def test_both_stages_ask_for_json_mode_and_leave_room_for_thinking():
 def test_providers_without_document_support_say_so():
     with pytest.raises(providers.UnsupportedDocument):
         providers.GroqProvider().complete_document("m", "prompt", b"%PDF", 100)
+
+
+# ------------------------------------------------------- profile: PDF resume --
+
+class NativePdfStub(StubProvider):
+    """A provider like Anthropic/Gemini that reads PDF bytes server-side."""
+
+    def complete_document(self, model, prompt, pdf, max_tokens):
+        self.calls.append({"model": model, "document": True, "max_tokens": max_tokens})
+        return '{"name": "Native"}'
+
+
+def test_profile_pdf_prefers_the_providers_native_document_read():
+    s = NativePdfStub()
+    llm.build_profile(resume_bytes=b"%PDF", resume_text="locally extracted",
+                      is_pdf=True, provider=s, model="m")
+    assert s.calls[0]["document"] is True
+    assert len(s.calls) == 1  # complete() never ran: no double-read
+
+
+def test_profile_pdf_falls_back_to_extracted_text_when_provider_cant_read():
+    """GLM/Groq/Ollama raise UnsupportedDocument; the locally extracted text
+    from jobhunt.extract keeps the build working instead of failing."""
+    s = StubProvider(['{"name": "Ada"}'])
+    profile = llm.build_profile(resume_bytes=b"%PDF", resume_text="Ada Lovelace",
+                                is_pdf=True, provider=s, model="m")
+    assert profile["name"] == "Ada"
+    assert "Ada Lovelace" in s.calls[0]["user"]
+
+
+def test_profile_pdf_without_text_or_document_support_tips_the_user():
+    s = StubProvider()
+    with pytest.raises(LLMError, match="Tip:"):
+        llm.build_profile(resume_bytes=b"%PDF", resume_text=None,
+                          is_pdf=True, provider=s, model="m")

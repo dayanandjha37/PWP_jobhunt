@@ -12,6 +12,8 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jobhunt.fetch import Job
@@ -102,6 +104,14 @@ class _Api:
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def delete(self, path: str) -> tuple[int, dict]:
+        req = urllib.request.Request(self.base + path, method="DELETE")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
 
 def test_api_serves_users_jobs_and_applies(tmp_path):
     api = _Api(tmp_path / "users")
@@ -137,6 +147,101 @@ def test_api_serves_users_jobs_and_applies(tmp_path):
         code, _ = api.get("/api/jobs?user=ghost")
         assert code == 404
     finally:
+        api.httpd.shutdown()
+
+
+# --------------------------------------------------------------- new user --
+def _scaffold(users: Path) -> None:
+    s = users / "sample"
+    s.mkdir(parents=True)
+    (s / "config.yaml").write_text("seen_file: seen.json\nscore_threshold: 7.0\n",
+                                   encoding="utf-8")
+
+
+def test_create_user_copies_scaffold(tmp_path):
+    users = tmp_path / "users"
+    _scaffold(users)
+    _seed(users)
+    api = _Api(users)
+    try:
+        code, d = api.post("/api/users", {"name": "bob"})
+        assert code == 200 and d["user"] == "bob"
+        # scaffold copied, ready for a run
+        assert (users / "bob" / "config.yaml").read_text(encoding="utf-8") \
+            == "seen_file: seen.json\nscore_threshold: 7.0\n"
+        # companies stay shared: no per-user copy is scaffolded
+        assert not (users / "bob" / "companies.yaml").exists()
+        assert (users / "bob" / "inbox").is_dir()
+        assert not (users / "bob" / "seen.json").exists()  # fresh tracker
+        # shows up in the list and serves empty jobs
+        code, d = api.get("/api/users")
+        assert [u["name"] for u in d["users"]] == ["alice", "bob", "sample"]
+        code, d = api.get("/api/jobs?user=bob")
+        assert code == 200 and d["jobs"] == []
+
+        # duplicate refused, nothing clobbered
+        code, d = api.post("/api/users", {"name": "bob"})
+        assert code == 409
+        # traversal and junk names refused
+        for bad in ("../evil", "a/b", "..", ".hidden", "", "sp ace"):
+            code, d = api.post("/api/users", {"name": bad})
+            assert code == 400, bad
+        assert not (tmp_path / "evil").exists()
+    finally:
+        api.httpd.shutdown()
+
+
+def test_create_user_without_sample_uses_defaults(tmp_path):
+    import yaml as _y
+    users = tmp_path / "users"
+    users.mkdir()
+    api = _Api(users)
+    try:
+        code, d = api.post("/api/users", {"name": "carol"})
+        assert code == 200
+        cfg = _y.safe_load((users / "carol" / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["seen_file"] == "seen.json" and cfg["inbox_dir"] == "inbox"
+        assert not (users / "carol" / "companies.yaml").exists()  # shared, not copied
+    finally:
+        api.httpd.shutdown()
+
+
+def test_delete_user_removes_directory(tmp_path):
+    users = tmp_path / "users"
+    _seed(users)
+    api = _Api(users)
+    try:
+        code, d = api.delete("/api/users?user=alice")
+        assert code == 200 and d["deleted"] == "alice"
+        assert not (users / "alice").exists()  # whole workspace gone
+        code, d = api.get("/api/users")
+        assert d["users"] == []
+        code, d = api.delete("/api/users?user=alice")  # already gone
+        assert code == 404
+        code, d = api.delete("/api/users?user=../../etc")  # not a real dir here
+        assert code == 404
+    finally:
+        api.httpd.shutdown()
+
+
+def test_delete_user_blocked_while_run_active(tmp_path):
+    from jobhunt import server
+    users = tmp_path / "users"
+    _seed(users)
+    api = _Api(users)
+    hold = threading.Event()
+    saved = (server.RUN.user, server.RUN.thread)
+    server.RUN.user = "alice"
+    server.RUN.thread = threading.Thread(target=hold.wait, daemon=True)
+    server.RUN.thread.start()
+    try:
+        code, d = api.delete("/api/users?user=alice")
+        assert code == 409 and "in progress" in d["error"]
+        assert (users / "alice" / "config.yaml").exists()  # untouched
+    finally:
+        hold.set()
+        server.RUN.thread.join()
+        server.RUN.user, server.RUN.thread = saved
         api.httpd.shutdown()
 
 
@@ -210,3 +315,94 @@ def test_env_roundtrip_preserves_custom_keys(tmp_path):
         assert env["GEMINI_API_KEY"] == "new-key" and env["CUSTOM_TOKEN"] == "keep-me"
     finally:
         api.httpd.shutdown()
+
+
+# ----------------------------------------------------------------- config --
+def test_config_roundtrip_and_validation(tmp_path):
+    users = tmp_path / "users"
+    _seed(users)
+    api = _Api(users)
+    try:
+        code, d = api.get("/api/config?user=alice")
+        assert code == 200 and "seen_file: seen.json" in d["config"]
+
+        edited = "# my workspace\nseen_file: seen.json\nscore_threshold: 9.0  # keep\n"
+        code, d = api.post("/api/config", {"user": "alice", "config": edited})
+        assert code == 200 and d["ok"]
+        # written verbatim: comments and order survive
+        assert (users / "alice" / "config.yaml").read_text(encoding="utf-8") == edited
+        # and the file the CLI eats agrees
+        code, jobs = api.get("/api/jobs?user=alice")
+        assert code == 200 and jobs["threshold"] == 9.0
+
+        for bad in ("filters: [oops", "- a\n- b\n", "just a scalar\n",
+                    "", {"not": "a string"}):
+            code, _ = api.post("/api/config", {"user": "alice", "config": bad})
+            assert code == 400, bad
+        # failed saves never touched the last good one
+        assert (users / "alice" / "config.yaml").read_text(encoding="utf-8") == edited
+
+        code, _ = api.get("/api/config?user=ghost")
+        assert code == 404
+        code, _ = api.post("/api/config", {"user": "ghost", "config": "a: 1\n"})
+        assert code == 400
+    finally:
+        api.httpd.shutdown()
+
+
+def test_resume_upload_pins_resume_file_preserving_comments(tmp_path):
+    users = tmp_path / "users"
+    _seed(users)
+    cfg_path = users / "alice" / "config.yaml"
+    cfg_path.write_text("# workspace\nseen_file: seen.json\nscore_threshold: 7.0  # keep\n",
+                        encoding="utf-8")
+    api = _Api(users)
+    try:
+        code, d = api.upload("/api/resume?user=alice", "cv.pdf", b"%PDF-1.4")
+        assert code == 200 and d["resume"] == "resume.pdf" and d["pinned"] is True
+        text = cfg_path.read_text(encoding="utf-8")
+        assert "# workspace" in text and "score_threshold: 7.0  # keep" in text
+        assert text.count("resume_file: resume.pdf") == 1
+        assert yaml.safe_load(text)["resume_file"] == "resume.pdf"
+
+        # same suffix again: overwrite in place, config byte-identical
+        before = cfg_path.read_text(encoding="utf-8")
+        code, d = api.upload("/api/resume?user=alice", "me.pdf", b"%PDF-1.5")
+        assert code == 200 and d["pinned"] is False
+        assert cfg_path.read_text(encoding="utf-8") == before
+        assert (users / "alice" / "resume.pdf").read_bytes() == b"%PDF-1.5"
+
+        # different suffix: re-pin to the new type, old file cleared
+        code, d = api.upload("/api/resume?user=alice", "cv.txt", b"skills: go")
+        assert code == 200 and d["resume"] == "resume.txt" and d["pinned"] is True
+        assert not (users / "alice" / "resume.pdf").exists()
+        assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["resume_file"] == "resume.txt"
+    finally:
+        api.httpd.shutdown()
+
+
+def test_set_config_key_appends_and_replaces(tmp_path):
+    from jobhunt.server import _set_config_key
+    p = tmp_path / "config.yaml"
+
+    p.write_text("seen_file: seen.json", encoding="utf-8")  # no trailing newline
+    _set_config_key(p, "resume_file", "resume.pdf")
+    text = p.read_text(encoding="utf-8")
+    assert text.endswith("resume_file: resume.pdf\n")
+    assert yaml.safe_load(text)["resume_file"] == "resume.pdf"
+
+    _set_config_key(p, "resume_file", "resume.txt")  # replaced in place, once
+    assert p.read_text(encoding="utf-8").count("resume_file:") == 1
+    assert yaml.safe_load(p.read_text(encoding="utf-8"))["resume_file"] == "resume.txt"
+
+    # indented / commented lookalikes are not top-level keys
+    p.write_text("filters:\n  resume_file: nested\n# resume_file: commented\n",
+                 encoding="utf-8")
+    _set_config_key(p, "resume_file", "resume.md")
+    text = p.read_text(encoding="utf-8")
+    assert "  resume_file: nested" in text and "# resume_file: commented" in text
+    assert yaml.safe_load(text)["resume_file"] == "resume.md"
+    assert yaml.safe_load(text)["filters"] == {"resume_file": "nested"}
+
+    _set_config_key(p, "digest_file", "out/week digest.html")  # space -> quoted
+    assert yaml.safe_load(p.read_text(encoding="utf-8"))["digest_file"] == "out/week digest.html"

@@ -58,10 +58,11 @@ filters:
     - '\b(frontend|front-end|ios|android|mobile|game|designer)\b' # wrong discipline
     - '\b(data scientist|machine learning scientist|research scientist)\b'
 
-  # Substrings matched against "<location> <title>", case-insensitive.
-  # Focus on India, with Bangalore/Bengaluru as a priority while still allowing
-  # other Indian locations because your resume is based in Delhi-NCR and you are
-  # targeting software/AI engineering roles.
+  # Location words matched whole-word against "<location> <title>",
+  # case-insensitive. Word boundary matters: substring matching made
+  # "india" match "Indiana". Focus on India, with Bangalore/Bengaluru as a
+  # priority while still allowing other Indian locations because your resume
+  # is based in Delhi-NCR and you are targeting software/AI engineering roles.
   locations:
     - delhi
     - ncr
@@ -69,11 +70,18 @@ filters:
     - gurgaon
     - gurugram
     - faridabad
-    - bangalore
-    - bengaluru
     - india
 
-  # If true, anything reading as remote passes the location gate.
+  # Regexes (same syntax as include_titles) matched against the LOCATION
+  # string only. A match drops the job even if it looks remote or matches a
+  # location above — this is what kills "Remote, United States" and
+  # "Remote (EMEA)", which are remote jobs you cannot take.
+  exclude_locations:
+    - '\b(us|usa|u\.s\.?|united states|north america|south america|latam|emea|europe|european union|uk|united kingdom|england|scotland|wales|ireland|canada|singapore|australia|new zealand|germany|poland|brazil|mexico|argentina|chile|colombia|peru|japan|china|south korea|korea|taiwan|vietnam|thailand|indonesia|philippines|malaysia|israel|uae|dubai|saudi|qatar|turkey|russia|ukraine|netherlands|holland|belgium|france|spain|portugal|italy|switzerland|sweden|norway|denmark|finland|estonia|latvia|lithuania|czech|slovakia|hungary|romania|bulgaria|greece|austria|south africa|kenya|nigeria|egypt|pakistan|bangladesh|sri lanka|nepal)\b'
+
+  # If true, a location reading as remote/anywhere passes the location gate.
+  # The remote check looks at the location string ONLY — a title like
+  # "Distributed Systems Engineer" is not a remote claim.
   allow_remote: true
 
   # Drop postings older than this. Set to null to disable.

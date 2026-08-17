@@ -44,6 +44,7 @@ PAGE = r"""<!doctype html>
   .btn { cursor: pointer; font-weight: 600; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #0f1115; }
   .btn.ghost { background: transparent; }
+  .btn.danger { background: transparent; color: var(--red); }
   .btn:disabled { opacity: .5; cursor: default; }
   #runmsg { color: var(--muted); font-size: 13px; }
   #runmsg.err { color: var(--red); }
@@ -101,13 +102,15 @@ PAGE = r"""<!doctype html>
              text-transform: uppercase; margin: 18px 0 8px; }
   .card > .sechead:first-child { margin-top: 0; }
   .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
-  .err { color: var(--red); font-size: 13px; }
+  .err { color: var(--red); font-size: 13px; white-space: pre-wrap; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">job<span>hunt</span></div>
   <select id="user" title="user"></select>
+  <button class="btn ghost" id="add-user" title="create a user directory under users/">+ user</button>
+  <button class="btn danger" id="remove-user" title="delete this user's directory under users/">– user</button>
   <div class="stats">
     <div class="tile"><b id="s-tracked">–</b><i>seen</i></div>
     <div class="tile"><b id="s-emailed">–</b><i>in digest</i></div>
@@ -131,7 +134,7 @@ PAGE = r"""<!doctype html>
 const $ = (s) => document.querySelector(s);
 const state = { user: null, tab: "todo", q: "", jobs: [], threshold: 7,
                 stats: {}, polling: null, buildPolling: null,
-                profile: null, envFields: null };
+                profile: null, envFields: null, configText: null };
 
 // ---- helpers -------------------------------------------------------------
 function el(tag, attrs = {}, ...kids) {
@@ -169,17 +172,38 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(body.error || r.status);
   return body;
 }
-async function loadUsers() {
+async function loadUsers(preselect) {
   const { users } = await api("/api/users");
   const sel = $("#user");
   sel.replaceChildren();
   for (const u of users) sel.append(el("option", { value: u.name },
     `${u.name} (${u.tracked})`));
-  const wanted = new URLSearchParams(location.search).get("user");
+  const wanted = preselect || new URLSearchParams(location.search).get("user");
   state.user = users.some((u) => u.name === wanted) ? wanted : users[0]?.name;
-  if (state.user) { sel.value = state.user; await loadJobs(); }
+  if (state.user) { sel.value = state.user; await loadTab(); }
   else $("#list").replaceChildren(el("div", { class: "empty" },
-    "No users under users/ — create one with a config.yaml first."));
+    "No users under users/ yet — add one with the “+ user” button above."));
+}
+async function addUser() {
+  const name = prompt("New user name — becomes a directory under users/:", "");
+  if (!name || !name.trim()) return;
+  try {
+    const d = await api("/api/users", post({ name: name.trim() }));
+    await loadUsers(d.user);  // reload the list with the new user selected
+  } catch (e) { alert(e.message); }
+}
+async function removeUser() {
+  if (!state.user) return;
+  const name = state.user;
+  const ok = confirm(`Delete users/${name}?\n` +
+    "Everything inside goes too — config, resume, profile.json, .env secrets, " +
+    "the seen.json tracker and its application history. No undo.");
+  if (!ok) return;
+  try {
+    await api("/api/users?user=" + encodeURIComponent(name), { method: "DELETE" });
+    state.user = null;
+    await loadUsers();  // falls back to the first remaining user
+  } catch (e) { alert(e.message); }
 }
 async function loadJobs() {
   if (!state.user) return;
@@ -207,7 +231,8 @@ function renderTabs() {
     else if (j.score != null && j.score >= state.threshold) n.todo++;
   }
   const tabs = [["todo", "To apply"], ["applied", "Applied"], ["all", "All"],
-                ["profile", "Profile"], ["settings", "Settings"]];
+                ["profile", "Profile"], ["settings", "Settings"],
+                ["config", "Config"]];
   $("#tabs").replaceChildren(...tabs.map(([id, label]) =>
     el("button", {
       class: "tab" + (state.tab === id ? " on" : ""),
@@ -217,6 +242,7 @@ function renderTabs() {
 function loadTab() {
   if (state.tab === "profile") return loadProfile();
   if (state.tab === "settings") return loadEnv();
+  if (state.tab === "config") return loadConfig();
   return loadJobs();
 }
 function panelError(msg) {
@@ -224,10 +250,11 @@ function panelError(msg) {
 }
 function render() {
   renderTabs();
-  $("#q").style.display =
-    state.tab === "profile" || state.tab === "settings" ? "none" : "";
+  $("#q").style.display = ["profile", "settings", "config"].includes(state.tab)
+    ? "none" : "";
   if (state.tab === "profile") { renderProfile(); return; }
   if (state.tab === "settings") { renderSettings(); return; }
+  if (state.tab === "config") { renderConfig(); return; }
   $("#s-tracked").textContent = state.stats.tracked ?? "–";
   $("#s-emailed").textContent = state.stats.emailed ?? "–";
   $("#s-applied").textContent = state.stats.applied ?? "–";
@@ -326,7 +353,7 @@ function renderProfile() {
   const d = state.profile || { user: state.user, resume: null, profile: null };
 
   // -- resume upload
-  const file = el("input", { type: "file", accept: ".pdf,.txt,.md" });
+  const file = el("input", { type: "file", accept: ".pdf,.docx,.txt,.md" });
   const upMsg = el("span", { class: "hint" });
   const upload = el("button", { class: "btn primary", onclick: async () => {
     if (!file.files.length) { upMsg.textContent = "pick a file first"; return; }
@@ -345,7 +372,7 @@ function renderProfile() {
     el("h3", { class: "sechead" }, "Resume"),
     el("p", { class: "hint" }, d.resume
       ? `on file: ${d.resume} — uploading a new one replaces it`
-      : "no resume yet — upload a .pdf, .txt or .md"),
+      : "no resume yet — upload a .pdf, .docx, .txt or .md"),
     el("div", { class: "row" }, file, upload, upMsg),
     el("div", { class: "row" },
       el("button", { class: "btn", disabled: !d.resume ? "" : null,
@@ -464,6 +491,38 @@ function renderSettings() {
     el("div", { class: "row" }, save, saved));
 }
 
+// ---- config tab: the user's config.yaml -----------------------------------
+async function loadConfig() {
+  if (!state.user) return;
+  try {
+    const d = await api("/api/config?user=" + encodeURIComponent(state.user));
+    state.configText = d.config;
+    render();
+  } catch (e) { panelError(e.message); }
+}
+
+function renderConfig() {
+  const editor = el("textarea", { spellcheck: "false" });
+  editor.value = state.configText ?? "";
+  const err = el("span", { class: "err" });
+  const saved = el("span", { class: "saved" }, "saved");
+  const save = el("button", { class: "btn primary", onclick: async () => {
+    try {
+      await api("/api/config", post({ user: state.user, config: editor.value }));
+      err.textContent = "";
+      state.configText = editor.value;
+      saved.classList.add("show"); setTimeout(() => saved.classList.remove("show"), 1500);
+    } catch (e) { err.textContent = e.message; }  // the server is the YAML gatekeeper
+  }}, "Save config");
+  $("#list").replaceChildren(el("div", { class: "card" },
+    el("h3", { class: "sechead" }, "config.yaml"),
+    el("p", { class: "hint" },
+      `users/${state.user}/config.yaml — filters, thresholds and file paths ` +
+      "for this user only. Saved as-is: comments and key order survive."),
+    editor,
+    el("div", { class: "row" }, save, saved, err)));
+}
+
 // ---- run pipeline --------------------------------------------------------
 async function startRun(mock) {
   try {
@@ -493,6 +552,8 @@ function msg(text, err) {
 $("#user").addEventListener("change", async (e) => {
   state.user = e.target.value; await loadTab();
 });
+$("#add-user").addEventListener("click", addUser);
+$("#remove-user").addEventListener("click", removeUser);
 $("#q").addEventListener("input", (e) => { state.q = e.target.value; render(); });
 $("#run-real").addEventListener("click", () => startRun(false));
 $("#run-mock").addEventListener("click", () => startRun(true));

@@ -66,6 +66,13 @@ careers board:
 | `boards.greenhouse.io/stripe` | `greenhouse` | `stripe` |
 | `jobs.lever.co/netlify` | `lever` | `netlify` |
 | `jobs.ashbyhq.com/ramp` | `ashby` | `ramp` |
+| `jobs.smartrecruiters.com/Experian` | `smartrecruiters` | `Experian` |
+
+SmartRecruiters slugs are the company id in
+`https://api.smartrecruiters.com/v1/companies/<Slug>/postings` — case-sensitive
+and not guessable from the domain (Boards' `Bosch` is not `bosch`). SmartRecruiters
+boards also paginate and need one extra request per posting for the JD, so the
+fetcher detail-fetches engineering-looking titles only, capped at 150 per board.
 
 The shipped list is **examples** — verify each before trusting the output.
 Companies migrate between ATS vendors and slugs go dead. A dead slug prints an
@@ -112,6 +119,19 @@ are the fallback for providers that can't take documents.
 
 This writes `profile.json`. It's gitignored — read it, fix anything the model
 got wrong, and keep it out of version control.
+
+The same build retunes the config: `include_titles`, `exclude_titles` and
+`locations` in `config.yaml` are regenerated from the resume (target titles,
+seniority, location), so a QA engineer's filters no longer ship
+software-developer defaults. Hand edits stick until the next
+`jobhunt profile` run overwrites them; everything else in the config is
+never touched.
+
+### Boards are shared, configs are per-user
+
+The root `companies.yaml` is the master boards list — every user under
+`users/` polls it. A user gets their own list only by creating
+`users/<name>/companies.yaml`; drop or edit that file to go back to shared.
 
 ### 4. Run it
 
@@ -171,7 +191,7 @@ DRAFT_MODEL=claude-sonnet-5
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | yes | default; uses the official SDK |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | yes | generous free tier |
 | Groq | `groq` | `GROQ_API_KEY` | no | very fast, free tier |
-| OpenAI-compatible | `openai-compatible` | `GROQ_API_KEY` + `LLM_BASE_URL` | no | Together, OpenRouter, vLLM |
+| OpenAI-compatible | `openai-compatible` | `LLM_API_KEY` + `LLM_BASE_URL` | no | GLM (Z.ai), Together, OpenRouter, vLLM |
 | Ollama | `ollama` | none | no | fully local, `OLLAMA_HOST` |
 
 Everything except Anthropic goes over plain `requests`, so you can delete the
@@ -209,12 +229,12 @@ Repository **secrets** to set (Settings → Secrets and variables → Actions):
 | Secret | What |
 |---|---|
 | `PROFILE_JSON` | the entire contents of your local `profile.json` |
-| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY`) |
+| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY` / `LLM_API_KEY`) |
 | `SMTP_USER` / `SMTP_PASS` | Gmail address + **App Password**, not your login |
 | `MAIL_TO` | where the digest goes |
 
 Optional repository **variables**: `LLM_PROVIDER`, `SCREEN_PROVIDER`,
-`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`.
+`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`, `LLM_BASE_URL`.
 
 Trigger it by hand first — Actions → *daily job digest* → *Run workflow*, with
 `dry_run` ticked to build the digest artifact without emailing.
@@ -230,6 +250,7 @@ normal password stops working once 2FA is on.
 jobhunt/
   fetch.py       Job dataclass, strip_html, 3 pure parsers, fetch_all
   prefilter.py   title/location/freshness gate — no LLM, no cost
+  filtergen.py   resume -> config.yaml filters (rewritten on profile build)
   providers.py   the swappable provider interface + 5 backends
   llm.py         screen() / draft() / build_profile() / keyword stub
   digest.py      HTML email (inline CSS only — Gmail strips <style>)
@@ -240,8 +261,8 @@ jobhunt/
   page.py        the UI page: one static HTML string, no build step
   cli.py         argparse: profile / run / run-all / ui / applied / stats
 config.yaml      filters, thresholds, paths
-companies.yaml   boards to poll
-tests/           89 tests, no network, no key
+companies.yaml   shared boards list — master for every users/<name>/ workspace
+tests/           138 tests, no network, no key
 ```
 
 HTTP is kept out of the parsers on purpose. Each `parse_*(slug, company, body)`
