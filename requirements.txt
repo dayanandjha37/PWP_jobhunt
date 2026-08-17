@@ -7,5 +7,9 @@ PyYAML>=6.0
 # so you can delete this line and still use those.
 anthropic>=0.40
 
+# Only needed to build a profile from a .pdf resume (.docx/.txt/.md use the
+# stdlib). Lazy-imported, so mock runs never touch it.
+pypdf>=4
+
 # Tests
 pytest>=8.0

@@ -7,6 +7,8 @@ pipeline runs, so it stays on your machine.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -94,7 +96,8 @@ ENV_SPEC: list[tuple[str, list[tuple[str, str, bool]]]] = [
         ("OLLAMA_HOST", "ollama host (local only)", False),
         ("GEMINI_API_KEY", "Gemini API key", True),
         ("ANTHROPIC_API_KEY", "Anthropic API key", True),
-        ("GROQ_API_KEY", "Groq / openai-compatible API key", True),
+        ("LLM_API_KEY", "openai-compatible API key (GLM, OpenRouter, Together, vLLM)", True),
+        ("GROQ_API_KEY", "Groq API key", True),
     ]),
     ("Email digest", [
         ("SMTP_HOST", "SMTP host (Gmail: smtp.gmail.com)", False),
@@ -145,7 +148,88 @@ def _write_env(path: Path, env: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _set_config_key(path: Path, key: str, value: str) -> None:
+    """Set a top-level `key: value` line with a text edit, not yaml.safe_dump —
+    the user's comments and key order must survive. Nested or commented
+    lookalikes are indented or #-prefixed, so a column-0 startswith can't
+    hit them."""
+    line = f"{key}: {_env_line(value)}"  # quotes anything YAML would mangle
+    out, seen = [], False
+    for cur in path.read_text(encoding="utf-8").splitlines():
+        if not seen and cur.startswith(key + ":"):
+            out.append(line)
+            seen = True  # replace in place
+        else:
+            out.append(cur)
+    if not seen:
+        out += ["", "# resume pinned here by the UI upload", line]
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
 # -------------------------------------------------------------------- data --
+# What a brand-new user directory gets. Preferred scaffold is users/sample
+# (copy + rename, same as the manual flow its config.yaml describes); these
+# built-ins only kick in when the sample has been deleted.
+USER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+DEFAULT_CONFIG = """\
+# Per-user workspace config. Paths are relative to THIS directory.
+# The filters below are software-developer scaffolding: the first
+# `python -m jobhunt profile --user <name>` rewrites include/exclude titles
+# and locations from the uploaded resume. Everything else stays as edited.
+filters:
+  include_titles:
+    - '\\b(software|backend|java|platform|systems|cloud)\\b.*\\b(engineer|developer)\\b'
+    - '\\bsde\\b'
+  exclude_titles:
+    - '\\b(staff|principal|architect)\\b'
+    - '\\b(senior|manager|director|head of)\\b'
+    - '\\b(intern|internship)\\b'
+  locations:
+    - bangalore
+    - bengaluru
+    - india
+  allow_remote: true
+  max_age_days: 30
+
+profile_file: profile.json
+seen_file: seen.json
+digest_file: out/digest.html
+tracker_csv: out/tracker.csv
+companies_file: companies.yaml   # per-user override; absent -> shared root list
+inbox_dir: inbox
+
+score_threshold: 7.0
+max_per_digest: 5
+"""
+
+SCAFFOLD_FILES = ("config.yaml",)  # companies stay shared (root companies.yaml)
+
+
+def create_user(users_dir: Path, name: str) -> Path:
+    """Make users/<name> from the sample scaffold (or built-in defaults).
+    Returns the new directory; raises ValueError on a bad or taken name.
+    Only config.yaml is scaffolded: the boards list stays shared at the
+    root companies.yaml — a user gets their own copy only by creating one."""
+    if not USER_NAME.fullmatch(name or ""):
+        raise ValueError("name must start with a letter/digit and use only "
+                         "letters, digits, dot, dash, underscore")
+    u = users_dir / name
+    if u.exists():
+        raise ValueError(f"user already exists: {name}")
+    scaffold = users_dir / "sample"
+    users_dir.mkdir(parents=True, exist_ok=True)
+    u.mkdir()
+    for fname in SCAFFOLD_FILES:
+        src = scaffold / fname
+        if src.is_file():
+            shutil.copyfile(src, u / fname)
+        else:
+            (u / fname).write_text(DEFAULT_CONFIG, encoding="utf-8")
+    (u / "inbox").mkdir()  # the Indeed drop point; archive/ appears on demand
+    return u
+
+
 def _users(users_dir: Path) -> list[dict]:
     out = []
     if users_dir.is_dir():
@@ -211,6 +295,13 @@ def _profile_payload(users_dir: Path, name: str) -> dict:
     return {"user": name, "resume": _find_resume_file(u, cfg), "profile": profile}
 
 
+def _config_payload(users_dir: Path, name: str) -> dict:
+    u = _user_dir(users_dir, name)
+    if u is None:
+        return {"error": f"no user directory: {name}"}
+    return {"user": name, "config": (u / "config.yaml").read_text(encoding="utf-8")}
+
+
 # ----------------------------------------------------------------- handler --
 class Handler(BaseHTTPRequestHandler):
     """Class attrs so tests can point the whole UI at a temp users/ tree."""
@@ -256,13 +347,25 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/env":
             payload = self._env_payload(self._query().get("user", ""))
             self._json(200 if "error" not in payload else 404, payload)
+        elif path == "/api/config":
+            payload = _config_payload(self.users_dir, self._query().get("user", ""))
+            self._json(200 if "error" not in payload else 404, payload)
+        else:
+            self._json(404, {"error": f"no route: {path}"})
+
+    def do_DELETE(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/api/users":
+            self._delete_user(self._query().get("user", ""))
         else:
             self._json(404, {"error": f"no route: {path}"})
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         try:
-            if path == "/api/applied":
+            if path == "/api/users":
+                self._post_user(self._body())
+            elif path == "/api/applied":
                 self._post_applied(self._body())
             elif path == "/api/note":
                 self._post_note(self._body())
@@ -276,6 +379,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._post_build(self._body())
             elif path == "/api/env":
                 self._post_env(self._body())
+            elif path == "/api/config":
+                self._post_config(self._body())
             else:
                 self._json(404, {"error": f"no route: {path}"})
         except (KeyError, ValueError, json.JSONDecodeError) as e:
@@ -289,6 +394,27 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in q.items()}
 
     # ---- actions ----
+    def _post_user(self, body: dict) -> None:
+        try:
+            u = create_user(self.users_dir, str(body.get("name") or "").strip())
+        except ValueError as e:
+            self._json(409 if "already exists" in str(e) else 400, {"error": str(e)})
+            return
+        self._json(200, {"ok": True, "user": u.name})
+
+    def _delete_user(self, name: str) -> None:
+        u = _user_dir(self.users_dir, name)
+        if u is None:
+            self._json(404, {"error": f"no user directory: {name}"})
+            return
+        for what, proc in (("pipeline run", RUN), ("profile build", BUILD)):
+            if proc.running and proc.user == u.name:
+                self._json(409, {"error": f"a {what} is in progress for {u.name} "
+                                          "— wait for it to finish"})
+                return
+        shutil.rmtree(u)
+        self._json(200, {"ok": True, "deleted": u.name})
+
     def _store_for(self, body: dict) -> tuple[Store, str]:
         u = _user_dir(self.users_dir, str(body.get("user") or ""))
         if u is None:
@@ -342,13 +468,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "empty upload"})
             return
         cfg = yaml.safe_load((u / "config.yaml").read_text(encoding="utf-8")) or {}
-        target = cfg.get("resume_file") or f"resume{Path(filename).suffix.lower()}"
-        if not cfg.get("resume_file"):  # clear stale resume.* so the glob is unambiguous
+        pinned = cfg.get("resume_file")
+        suffix = Path(filename).suffix.lower()
+        # keep the pin only when it holds the same kind of file — a pinned
+        # resume.txt must not end up holding PDF bytes (extraction dispatches
+        # on suffix)
+        target = pinned if pinned and Path(pinned).suffix.lower() == suffix \
+            else f"resume{suffix}"
+        if target != pinned:  # clear stale resume.* so the glob is unambiguous
             for p in u.glob("resume.*"):
                 if p.suffix.lower() in RESUME_SUFFIXES and p.name != target:
                     p.unlink()
         (u / target).write_bytes(data)
-        self._json(200, {"ok": True, "resume": target, "bytes": len(data)})
+        if target != pinned:  # pin (or re-pin) after the bytes landed — a failed
+            _set_config_key(u / "config.yaml", "resume_file", target)  # write still globs
+        self._json(200, {"ok": True, "resume": target, "bytes": len(data),
+                         "pinned": target != pinned})
 
     def _post_profile(self, body: dict) -> None:
         u = _user_dir(self.users_dir, str(body.get("user") or ""))
@@ -362,6 +497,25 @@ class Handler(BaseHTTPRequestHandler):
         out.write_text(json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
                        encoding="utf-8")
         self._json(200, {"ok": True, "saved": out.name})
+
+    def _post_config(self, body: dict) -> None:
+        """Raw YAML editor save: validate, then write the text verbatim —
+        comments and key order survive, same deal as the .env writer."""
+        u = _user_dir(self.users_dir, str(body.get("user") or ""))
+        if u is None:
+            raise ValueError(f"no user directory: {body.get('user')}")
+        text = body.get("config")
+        if not isinstance(text, str):
+            raise ValueError("config must be a string of YAML")
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ValueError(f"invalid YAML: {e}") from None
+        if not isinstance(parsed, dict):  # empty text, scalars and lists land here
+            raise ValueError("config must be a YAML mapping (key: value)")
+        (u / "config.yaml").write_text(text if text.endswith("\n") else text + "\n",
+                                       encoding="utf-8")
+        self._json(200, {"ok": True, "saved": "config.yaml"})
 
     def _post_build(self, body: dict) -> None:
         u = _user_dir(self.users_dir, str(body.get("user") or ""))

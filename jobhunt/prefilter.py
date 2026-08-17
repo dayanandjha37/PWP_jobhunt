@@ -10,7 +10,17 @@ from datetime import datetime, timedelta, timezone
 
 from .fetch import Job
 
+# Matched against the LOCATION string only, never the title — a title like
+# "Distributed Systems Engineer" is not a remote claim, and matching it there
+# lets every on-site distributed-systems job in the world through the gate.
 REMOTE_HINTS = ("remote", "anywhere", "work from home", "wfh", "distributed")
+REMOTE_PAT = re.compile("|".join(rf"\b{re.escape(h)}\b" for h in REMOTE_HINTS), re.I)
+
+
+def _word_pats(needles: list[str]) -> list[re.Pattern]:
+    """Whole-word matching. Substring matching made "india" match "Indiana"
+    and "Indianapolis" — word boundaries kill that whole class of false hit."""
+    return [re.compile(rf"\b{re.escape(n)}\b", re.I) for n in needles]
 
 
 def _any_match(patterns: list[str], text: str) -> bool:
@@ -33,7 +43,8 @@ def _parse_date(value: str | None) -> datetime | None:
 def prefilter(jobs: list[Job], cfg: dict) -> list[Job]:
     inc = cfg.get("include_titles") or [r"."]
     exc = cfg.get("exclude_titles") or []
-    locs = [l.lower() for l in (cfg.get("locations") or [])]
+    loc_pats = _word_pats([l.lower() for l in (cfg.get("locations") or [])])
+    excl_locs = [re.compile(p, re.I) for p in (cfg.get("exclude_locations") or [])]
     allow_remote = bool(cfg.get("allow_remote", True))
     max_age = cfg.get("max_age_days")
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age) if max_age else None
@@ -44,10 +55,16 @@ def prefilter(jobs: list[Job], cfg: dict) -> list[Job]:
             stats["title"] += 1
             continue
 
-        if locs:
-            hay = f"{j.location} {j.title}".lower()
-            is_remote = allow_remote and any(h in hay for h in REMOTE_HINTS)
-            if not is_remote and not any(l in hay for l in locs):
+        if loc_pats or excl_locs:
+            loc = j.location or ""
+            # exclude_locations wins even over a wanted location: it is what
+            # kills "Remote, United States" style geo-restricted remote roles.
+            if any(p.search(loc) for p in excl_locs):
+                stats["location"] += 1
+                continue
+            hay = f"{loc} {j.title}"
+            is_remote = allow_remote and bool(REMOTE_PAT.search(loc))
+            if not is_remote and not any(p.search(hay) for p in loc_pats):
                 stats["location"] += 1
                 continue
 

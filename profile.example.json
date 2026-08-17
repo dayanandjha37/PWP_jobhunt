@@ -39,5 +39,9 @@
     "Site Reliability Engineer",
     "Platform Engineer"
   ],
+  "locations": [
+    "Bengaluru",
+    "India"
+  ],
   "seniority": "mid"
 }
