@@ -58,10 +58,13 @@ Create `scripts/users_sync.py`:
 
 Create `tests/test_users_sync.py` — offline, fake `gh` runner injected.
 
-- [ ] Done
+- [x] Done
 
-*Test:* `pytest tests/` green (138 + new). `python scripts/users_sync.py
---dry-run` prints the plan, touches nothing.
+*Test:* `pytest tests/` green (138 + 11 new = 149). Dry-run against the real
+repo: 14 actions (7 secrets/user + USERS var), warnings for piyush's missing
+SMTP_PASS and both users' local LLM keys, no values printed.
+
+*Session note:* 2026-08-18 — committed `ba1edf9` on `ciissues`.
 
 ## Story M2 — First real sync
 
@@ -74,12 +77,16 @@ gh variable get USERS
 
 Old root secrets untouched — current workflow unaffected.
 
-- [ ] Done
+- [x] Done
 
-*Test:* per-user secret names present; `USERS` = `["dayanand","piyush"]`;
+*Test:* per-user secret names present; `USERS` = `["dayanand", "piyush"]`;
 shared `LLM_API_KEY` + provider vars set (`LLM_PROVIDER=openai-compatible`,
 `SCREEN_MODEL=glm-5.2`, `DRAFT_MODEL=glm-5.2`,
-`LLM_BASE_URL=https://api.z.ai/api/coding/paas/v4/`).
+`LLM_BASE_URL=https://api.z.ai/api/coding/paas/v4/`). Legacy `PROFILE_JSON`
+still present (deleted in M5).
+
+*Session note:* 2026-08-18 — sync ran clean; 14 secrets + USERS + 4 vars +
+LLM_API_KEY. piyush has no SMTP_PASS yet (warned, digest will not email).
 
 ## Story M3 — Workflow rewrite, verified on branch
 
