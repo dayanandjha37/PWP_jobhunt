@@ -206,21 +206,13 @@ inactivity (no pushes). Any commit resets it.
 *Learned:* `actions/cache` immutable keys + `restore-keys`, scheduler
 best-effort behavior, the 60-day rule.
 
-## Story 7 (optional, later) — Multi-user CI
+## Story 7 — Multi-user CI
 
-Today CI serves one implicit user (root `config.yaml` + one `PROFILE_JSON`).
-The repo's real model is multi-user (`users/dayanand`, `users/piyush`, each
-with own `.env`). Options:
+Pulled forward by user decision (2026-08-18): multi-user CI chosen (option B,
+extended with pause + delete-sync). Full story plan now lives in
+**PLAN-CI.md** — follow that file from Story M1.
 
-- **A. Keep single-user CI** (current): simplest; piyush runs locally.
-- **B. Multi-user CI**: per-user secrets (`PROFILE_JSON_DAYANAND`,
-  `PROFILE_JSON_PIYUSH`, per-user SMTP vars) and a workflow rewrite that
-  materializes `users/<name>/profile.json` + `.env` from secrets, then runs
-  `python -m jobhunt run-all --send`.
-
-Decide only after Stories 1–6 are green. B roughly doubles the secret surface.
-
-- [ ] Done (decision + implementation)
+- [x] Done (decision: multi-user, per-user SMTP, shared LLM key; see PLAN-CI.md)
 
 ---
 
