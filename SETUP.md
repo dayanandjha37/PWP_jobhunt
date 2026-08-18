@@ -328,41 +328,58 @@ python -m jobhunt run --send
 ## Step 12 — Make it run itself every morning
 
 This is the part that turns it from a script into an agent. GitHub will run it
-for you on a schedule, for free, with your laptop closed.
+for you on a schedule, for free, with your laptop closed. CI is multi-user: it
+runs one digest per entry in the `USERS` repository variable, and a sync script
+keeps that variable and the per-user secrets matched to your local `users/`.
 
-1. Push your `config.yaml` and `companies.yaml` changes to your fork.
-   **`.env`, `profile.json`, your resume and `seen.json` are all gitignored and
-   will not be pushed** — that's deliberate. Nothing personal enters git, so a
-   public fork is fine. Your key and profile go in as secrets in the next step,
-   and `seen.json` is carried between runs by GitHub's cache.
+1. Give yourself a user workspace if you haven't: `cp -r users/sample
+   users/<your-name>` (letters, digits, underscores only — that name becomes
+   part of secret names). Fill in `profile.json`, `config.yaml`, `.env` and
+   your resume there, same as you did at the repo root for local runs.
+   **`users/*` is entirely gitignored and will not be pushed** — that's
+   deliberate. Nothing personal enters git, so a public fork is fine; your key
+   and profile travel to GitHub as secrets in the next step, and `seen.json`
+   is carried between runs by GitHub's cache, one cache per user.
 
-2. In your fork: **Settings → Secrets and variables → Actions**.
+2. Install and authenticate the [GitHub CLI](https://cli.github.com) (`gh auth
+   login`) — the sync script drives it.
 
-   Add these under **Secrets**:
+3. In your fork: **Settings → Secrets and variables → Actions**, set the one
+   shared **Secret** every user screens with:
 
    | Secret | Value |
    |---|---|
-   | `PROFILE_JSON` | the entire contents of your local `profile.json`, pasted |
-   | `GEMINI_API_KEY` | your key (or `GROQ_API_KEY` / `ANTHROPIC_API_KEY`) |
-   | `SMTP_USER` | your Gmail address |
-   | `SMTP_PASS` | your 16-character App Password |
-   | `MAIL_TO` | where the digest should go |
+   | `LLM_API_KEY` | your LLM provider key |
 
-   And these under **Variables**:
+   And the **Variables** for it, e.g.:
 
    | Variable | Value |
    |---|---|
-   | `LLM_PROVIDER` | `gemini` |
-   | `SCREEN_MODEL` | `gemini-3.5-flash-lite` |
-   | `DRAFT_MODEL` | `gemini-3.6-flash` |
+   | `LLM_PROVIDER` | `openai-compatible` |
+   | `LLM_BASE_URL` | your provider's OpenAI-style endpoint |
+   | `SCREEN_MODEL` | e.g. `glm-5.2` |
+   | `DRAFT_MODEL` | e.g. `glm-5.2` |
 
-3. Go to the **Actions** tab and enable workflows (forks start with them off).
+4. Sync your users to the repo — this creates the per-user secrets
+   (`PROFILE_JSON_<NAME>`, `SMTP_*_<NAME>`, `MAIL_TO_<NAME>`, …) and writes
+   the `USERS` variable for you:
 
-4. Test it now instead of waiting for tomorrow: **Actions → daily job digest →
-   Run workflow**, tick **dry_run**, and run it. That builds the digest and
-   uploads it as a downloadable artifact without emailing anyone.
+   ```bash
+   python3 scripts/users_sync.py --dry-run   # review names + byte sizes
+   python3 scripts/users_sync.py --yes
+   ```
 
-5. If that's green, you're done. It runs at **06:00 IST every weekday**.
+   Repeat after adding, pausing (`touch users/<name>/.paused`), or deleting a
+   user — that's the whole workflow. Values go file → `gh` stdin, never
+   argv/stdout.
+
+5. Go to the **Actions** tab and enable workflows (forks start with them off).
+
+6. Test it now instead of waiting for tomorrow: **Actions → daily job digest →
+   Run workflow**, tick **dry_run**, and run it. That builds each user's
+   digest and uploads it as a downloadable artifact without emailing anyone.
+
+7. If that's green, you're done. It runs at **06:00 IST every weekday**.
 
 To change the time, edit the `cron` line in `.github/workflows/daily.yml`. It's
 in UTC, so subtract 5 hours 30 minutes from your intended IST time.

@@ -178,10 +178,18 @@ Delete now kicks the same sync (secrets pruned). Button hidden for `sample`.
 "Scheduling" + SETUP.md Step 12 for the multi-user flow. Tick PLAN.md
 Story 7, point it at this file.
 
-- [ ] Done
+- [x] Done
 
-*Test:* `pytest` green; `touch users/piyush/.paused && python -m jobhunt
-run-all` runs dayanand only; docs match reality.
+*Test:* 153 pytest green (1 new). Live: `touch users/piyush/.paused` +
+`run-all --mock` printed `paused (skipped): piyush` and ran dayanand only
+(1/1 ok); `run-all --user piyush --mock` overrode the pause (1/1 ok). Marker
+removed after. README "Scheduling" + SETUP.md Step 12 rewritten for the
+multi-user flow (sync script, per-user secrets, shared LLM key, pause marker).
+PLAN.md Story 7 was already ticked and pointed here.
+
+*Session note:* 2026-08-19 — `_user_dirs()` in cli.py also skips the `sample`
+scaffold in a sweep (sync script always excluded it; sweep inclusion was a
+latent leftover), explicit `--user sample` still works.
 
 ---
 

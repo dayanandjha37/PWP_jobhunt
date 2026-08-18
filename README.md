@@ -219,25 +219,35 @@ python -m jobhunt stats                                 # + CSV export
 
 ## Scheduling
 
-[`.github/workflows/daily.yml`](.github/workflows/daily.yml) runs it at 06:00 IST
-on weekdays. `seen.json` is carried between runs with `actions/cache`, not
-committed — it's personal, and a `seen.json` in the repo would mark every job as
-already-seen for anyone who cloned it. Nothing personal ever enters git.
+[`.github/workflows/daily.yml`](.github/workflows/daily.yml) runs at 06:00 IST
+on weekdays, **once per user**: a plan job reads the `USERS` repository variable
+and fans the digest out as a matrix. Each user gets their own `seen.json` cache
+(`actions/cache`, never committed — a `seen.json` in the repo would mark every
+job as already-seen for anyone who cloned it). Nothing personal ever enters git.
 
-Repository **secrets** to set (Settings → Secrets and variables → Actions):
+Secrets are **not** set by hand. [`scripts/users_sync.py`](scripts/users_sync.py)
+pushes local `users/` to the repo:
 
-| Secret | What |
-|---|---|
-| `PROFILE_JSON` | the entire contents of your local `profile.json` |
-| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY` / `LLM_API_KEY`) |
-| `SMTP_USER` / `SMTP_PASS` | Gmail address + **App Password**, not your login |
-| `MAIL_TO` | where the digest goes |
+```bash
+python3 scripts/users_sync.py --dry-run   # names + byte sizes only
+python3 scripts/users_sync.py --yes
+```
 
-Optional repository **variables**: `LLM_PROVIDER`, `SCREEN_PROVIDER`,
-`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`, `LLM_BASE_URL`.
+Per user `<name>` it upserts `PROFILE_JSON_<NAME>`, `CONFIG_YAML_<NAME>`,
+`SMTP_{HOST,PORT,USER,PASS}_<NAME>` and `MAIL_TO_<NAME>` (from their
+`users/<name>/` workspace), rewrites `USERS` to the sorted non-paused list, and
+deletes per-user secrets whose local dir is gone. Values travel file → `gh`
+stdin, never argv or stdout. One shared `LLM_API_KEY` secret + provider
+**variables** (`LLM_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`, `LLM_BASE_URL`, …)
+serve every user.
+
+Pause someone without deleting anything — `users/<name>/.paused` (empty file;
+also a button in the web UI). They drop out of `USERS`, their secrets stay, and
+deleting the marker + rerunning sync resumes them. Deleting the whole
+`users/<name>/` dir + rerunning sync prunes their secrets for good.
 
 Trigger it by hand first — Actions → *daily job digest* → *Run workflow*, with
-`dry_run` ticked to build the digest artifact without emailing.
+`dry_run` ticked to build the digest artifacts without emailing.
 
 Gmail needs an [App Password](https://myaccount.google.com/apppasswords); your
 normal password stops working once 2FA is on.

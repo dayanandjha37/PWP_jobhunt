@@ -49,3 +49,5 @@ users/sample/resume.*
 # local agent/tool state
 .claude/settings.local.json
 .codebase-memory/
+PLAN.md
+PLAN-CI.md

@@ -176,3 +176,21 @@ def test_apply_plan_values_travel_via_stdin_never_argv(tmp_path):
     assert var_calls[0][0] == ("variable", "set", "USERS", "--body",
                                '["dayanand"]')
     assert any("SMTP_PASS_GONE" in line for line in log)
+
+
+# --- local run-all pause semantics (cli._user_dirs) -------------------------
+
+def test_user_dirs_skips_paused_unless_named(tmp_path):
+    import importlib
+    cli = importlib.import_module("jobhunt.cli")
+    for name in ("dayanand", "piyush", "sample"):
+        (tmp_path / "users" / name).mkdir(parents=True)
+    (tmp_path / "users" / "piyush" / ".paused").write_text("", encoding="utf-8")
+    (tmp_path / "users" / "loose-file").write_text("not a dir", encoding="utf-8")
+
+    got = [d.name for d in cli._user_dirs(tmp_path / "users")]
+    assert got == ["dayanand"]    # piyush paused, sample scaffold, loose file
+
+    # an explicit --user overrides the pause
+    got = [d.name for d in cli._user_dirs(tmp_path / "users", "piyush")]
+    assert got == ["piyush"]

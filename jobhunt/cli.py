@@ -303,6 +303,17 @@ def cmd_run(args) -> int:
 
 
 # ---------------------------------------------------------------- run-all --
+def _user_dirs(users_dir: Path, only: str | None = None) -> list[Path]:
+    """Which user dirs to sweep: everyone except paused ones, or just the
+    named one. An explicit `--user` overrides a .paused marker — naming
+    someone is asking for them specifically. `sample` is scaffold, not a
+    user; it's skipped in a sweep but runs if named outright."""
+    if only:
+        return [users_dir / only]
+    return [d for d in sorted(users_dir.iterdir()) if d.is_dir()
+            and d.name != "sample" and not (d / ".paused").exists()]
+
+
 def cmd_run_all(args) -> int:
     """Run the pipeline for every user in users/*/, sequentially.
 
@@ -313,10 +324,13 @@ def cmd_run_all(args) -> int:
     if not USERS_DIR.is_dir():
         print(f"no users/ directory at {USERS_DIR} — nothing to run")
         return 1
-    if args.user:
-        users = [USERS_DIR / args.user]
-    else:
-        users = sorted(d for d in USERS_DIR.iterdir() if d.is_dir())
+    users = _user_dirs(USERS_DIR, args.user)
+    if args.user is None:
+        paused = sorted(d.name for d in USERS_DIR.iterdir()
+                        if d.is_dir() and (d / ".paused").exists())
+        if paused:
+            print(f"paused (skipped): {', '.join(paused)} — "
+                  "delete their .paused marker to resume")
     if not users:
         print("no user directories found")
         return 1
