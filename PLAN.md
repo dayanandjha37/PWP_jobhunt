@@ -125,10 +125,11 @@ gh run watch             # or: gh run list --workflow=daily.yml --limit 1
 gh run view --log-failed # if it fails, read the actual error
 ```
 
-- [ ] Done
+- [x] Done
 
-Expected outcome: the "Write profile.json" step passes. A later step may still
-fail on a missing LLM key — that is normal here, it is Story 4's signal.
+Run 32134367735 (dry_run=true): "Write profile.json" ✓, fetch ✓ (4455 jobs),
+prefilter ✓ (36 new), digest artifact ✓. Pipeline step failed exactly as
+predicted: `ANTHROPIC_API_KEY is not set` — Story 4 signal.
 
 *Learned:* what a secret is (encrypted at rest, injected as env at runtime,
 never echoed in logs), `workflow_dispatch` inputs, run artifacts, reading
@@ -242,3 +243,7 @@ Decide only after Stories 1–6 are green. B roughly doubles the secret surface.
 - 2026-08-18 — Story 2 done: `gh` 2.97.0 installed, authed as
   `dayanandjha37` (scopes gist/read:org/repo), default repo set. Next:
   Story 3 (`PROFILE_JSON` secret + manual dry run).
+- 2026-08-18 — Story 3 done: `PROFILE_JSON` secret set from
+  `users/dayanand/profile.json`, dry run 32134367735 — profile write,
+  fetch, prefilter, artifact all green; failed only on missing
+  `ANTHROPIC_API_KEY`. Next: Story 4 (LLM key secret).
