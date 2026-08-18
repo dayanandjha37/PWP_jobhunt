@@ -108,12 +108,15 @@ Branch `ci-multiuser`. Rewrite `daily.yml`:
 - artifact `digest-<u>-<run_number>` from `users/<u>/out/`; per-user dedupe
   report. Cron + permissions unchanged.
 
-- [ ] Done
+- [x] Done
 
-*Test:* `gh workflow run daily.yml --ref ci-multiuser -f dry_run=true` → two
-digest jobs green, materialize logs `profile.json parsed OK`, artifacts
-exist, `gh cache list` shows per-user entries, screening passes on the
-shared GLM key.
+*Test:* run 32169598174 on `ci-multiuser`: plan job `users:
+["dayanand", "piyush"]`, both digest jobs green (dayanand 4m24s incl.
+screening via openai-compatible/glm-5.2 + 2 drafts, piyush 2m43s), artifacts
+`digest-dayanand-3` / `digest-piyush-3`, per-user caches saved
+(`jobhunt-seen-{dayanand,piyush}-32169598174`). actionlint clean.
+
+*Session note:* 2026-08-18 — committed `f5b3f9d` on `ci-multiuser`.
 
 ## Story M4 — Merge + prime + first real email
 
