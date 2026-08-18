@@ -13,34 +13,96 @@ on:
         type: boolean
         default: false
 
-# Two runs sharing one dedupe store would race. Queue them instead.
-concurrency:
-  group: jobhunt-daily
-  cancel-in-progress: false
-
 permissions:
   contents: read         # nothing is pushed back; the store lives in the cache
 
 jobs:
+  # Validate the USERS variable before it reaches a matrix: an empty or
+  # malformed list must skip the digest (grey), not fail the workflow (red
+  # "matrix does not contain any values"), and a typo'd entry should say how
+  # to fix it instead of dying in fromJSON.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.users.outputs.matrix }}
+    steps:
+      - name: Read the user list from the USERS variable
+        id: users
+        env:
+          USERS: ${{ vars.USERS }}
+        run: |
+          python - <<'PY'
+          import json, os, re, sys
+          raw = (os.environ.get("USERS") or "").strip()
+          users = []
+          if raw:
+              try:
+                  users = json.loads(raw)
+              except ValueError:
+                  print(f"::error::USERS variable is not valid JSON: {raw[:80]!r}"
+                        " — run scripts/users_sync.py to rewrite it")
+                  sys.exit(1)
+              if not isinstance(users, list) or not all(isinstance(u, str) for u in users):
+                  print('::error::USERS must be a JSON array of strings, e.g. ["dayanand"]')
+                  sys.exit(1)
+          clean, seen = [], set()
+          for u in users:
+              u = u.strip()
+              if not u or u in seen:
+                  continue
+              if u == "sample":
+                  print("::warning::'sample' is the local scaffold — removed from today's run")
+                  continue
+              if not re.fullmatch(r"[A-Za-z0-9_]+", u):
+                  print(f"::warning::user {u!r} has chars outside [A-Za-z0-9_] —"
+                        " no per-user secret name is possible; removed")
+                  continue
+              seen.add(u)
+              clean.append(u)
+          matrix = json.dumps(sorted(clean))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix}\n")
+          print(f"users: {matrix}")
+          PY
+
   digest:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'   # no users: skip, don't fail
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false                      # one user failing must not cancel the other
+      # max-parallel: 3                     # uncomment if the shared LLM key rate-limits
+      matrix:
+        user: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # Overlapping runs of the SAME user would race on that user's dedupe
+    # store; different users run in parallel, each in its own queue.
+    concurrency:
+      group: jobhunt-${{ matrix.user }}
+      cancel-in-progress: false
+
+    env:
+      USER_NAME: ${{ matrix.user }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Restore the dedupe store
-        # seen.json is what stops you being emailed the same job twice, so it
-        # has to survive between runs. It is NOT committed: it is personal, and
-        # a seen.json in the repo would mark every job as seen for anyone who
-        # clones it. Cache entries are immutable, so the key is unique per run
-        # and restore-keys pulls the most recent one forward.
+        # seen.json is what stops a user being emailed the same job twice, so
+        # it has to survive between runs. It is NOT committed: it is personal,
+        # and a seen.json in the repo would mark every job as seen for anyone
+        # who clones it. Cache entries are immutable, so the key is unique per
+        # run and restore-keys pulls the most recent one forward. The username
+        # in the key keeps each user's lineage separate — safe because the
+        # plan job only passes [A-Za-z0-9_] names (a hyphen could make user
+        # "day" prefix-match user "day-anand"; an underscore cannot).
         uses: actions/cache@v4
         with:
-          path: seen.json
-          key: jobhunt-seen-${{ github.run_id }}
+          path: users/${{ matrix.user }}/seen.json
+          key: jobhunt-seen-${{ matrix.user }}-${{ github.run_id }}
           restore-keys: |
-            jobhunt-seen-
+            jobhunt-seen-${{ matrix.user }}-
 
       - uses: actions/setup-python@v5
         with:
@@ -50,59 +112,81 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write profile.json
-        # profile.json is gitignored (it is derived from your resume), so CI
-        # gets it from a secret. Create it locally with
-        #   python -m jobhunt profile --resume resume.pdf
-        # then paste the file contents into the PROFILE_JSON repo secret.
+      - name: Materialize the user workspace
+        # The only step that touches secrets. Everything below reads them via
+        # per-user names (secrets[format(...)]) so adding a user is purely a
+        # secrets+variable change — this file never lists usernames.
         env:
-          PROFILE_JSON: ${{ secrets.PROFILE_JSON }}
-        run: |
-          if [ -z "$PROFILE_JSON" ]; then
-            echo "::error::PROFILE_JSON secret is empty — see the README"
-            exit 1
-          fi
-          printf '%s' "$PROFILE_JSON" > profile.json
-          python -c "import json;json.load(open('profile.json'));print('profile.json parsed OK')"
-
-      - name: Run the pipeline
-        env:
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'anthropic' }}
+          PROFILE_JSON: ${{ secrets[format('PROFILE_JSON_{0}', matrix.user)] }}
+          CONFIG_YAML: ${{ secrets[format('CONFIG_YAML_{0}', matrix.user)] }}
+          SMTP_HOST: ${{ secrets[format('SMTP_HOST_{0}', matrix.user)] }}
+          SMTP_PORT: ${{ secrets[format('SMTP_PORT_{0}', matrix.user)] }}
+          SMTP_USER: ${{ secrets[format('SMTP_USER_{0}', matrix.user)] }}
+          SMTP_PASS: ${{ secrets[format('SMTP_PASS_{0}', matrix.user)] }}
+          MAIL_TO: ${{ secrets[format('MAIL_TO_{0}', matrix.user)] }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}   # one shared key for all users
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           SCREEN_PROVIDER: ${{ vars.SCREEN_PROVIDER }}
           DRAFT_PROVIDER: ${{ vars.DRAFT_PROVIDER }}
           SCREEN_MODEL: ${{ vars.SCREEN_MODEL }}
           DRAFT_MODEL: ${{ vars.DRAFT_MODEL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          mkdir -p "users/$USER_NAME"
+          if [ -z "$PROFILE_JSON" ]; then
+            echo "::error::PROFILE_JSON_${USER_NAME} secret is empty — run scripts/users_sync.py"
+            exit 1
+          fi
+          printf '%s' "$PROFILE_JSON" > "users/$USER_NAME/profile.json"
+          python -c "import json;json.load(open('users/$USER_NAME/profile.json'));print('profile.json parsed OK')"
+          if [ -n "$CONFIG_YAML" ]; then
+            printf '%s' "$CONFIG_YAML" > "users/$USER_NAME/config.yaml"
+          else
+            cp config.yaml "users/$USER_NAME/config.yaml"
+            echo "no CONFIG_YAML_${USER_NAME} secret — using the shared root config.yaml"
+          fi
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          u = os.environ["USER_NAME"]
+          # Written from env, not shell interpolation, so $, quotes and
+          # multiline values survive verbatim. Empty keys are omitted:
+          # absent SMTP_HOST/PORT fall back to the mailer's gmail defaults,
+          # absent MAIL_TO defaults to SMTP_USER (jobhunt/mailer.py).
+          keys = ["LLM_PROVIDER", "SCREEN_PROVIDER", "DRAFT_PROVIDER",
+                  "SCREEN_MODEL", "DRAFT_MODEL", "LLM_BASE_URL", "LLM_API_KEY",
+                  "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "MAIL_TO"]
+          lines = [f"{k}={os.environ[k]}" for k in keys
+                   if (os.environ.get(k) or "").strip()]
+          Path(f"users/{u}/.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(f"users/{u}/.env: {len(lines)} keys")
+          PY
+
+      - name: Run the pipeline
+        # run-all --user chdirs into users/<name>/ and scopes its .env over
+        # the process env — the same machinery as a local multi-user sweep.
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            python -m jobhunt run
+            python -m jobhunt run-all --user "$USER_NAME"
           else
-            python -m jobhunt run --send
+            python -m jobhunt run-all --user "$USER_NAME" --send
           fi
 
       - name: Upload digest
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ github.run_number }}
-          path: out/
+          name: digest-${{ matrix.user }}-${{ github.run_number }}
+          path: users/${{ matrix.user }}/out/
           retention-days: 14
           if-no-files-found: ignore
 
       - name: Report the dedupe store
         if: always()
         run: |
-          if [ -f seen.json ]; then
-            python -c "import json;print(f'tracking {len(json.load(open(\"seen.json\")))} postings')"
+          f="users/$USER_NAME/seen.json"
+          if [ -f "$f" ]; then
+            python -c "import json;print(f'tracking {len(json.load(open(\"$f\")))} postings')"
           else
             echo "no seen.json — first run, or the cache expired"
           fi
