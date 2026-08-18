@@ -101,10 +101,14 @@ gh auth status
 gh repo set-default dayanandjha37/PWP_jobhunt   # optional convenience
 ```
 
-- [ ] Done
+- [x] Done
 
 *Learned:* gh CLI basics, OAuth scopes (`repo`, `workflow` needed for later
 stories — `gh auth refresh -s workflow` if a workflow edit is rejected).
+
+*Note:* authed as `dayanandjha37`, scopes `gist read:org repo` — sufficient
+for `gh secret set` / `gh variable set`. Git push goes over SSH, so workflow
+file edits via git are unaffected by the missing `workflow` scope.
 
 ## Story 3 — Set `PROFILE_JSON`, run the workflow manually
 
@@ -235,3 +239,6 @@ Decide only after Stories 1–6 are green. B roughly doubles the secret surface.
 - 2026-08-18 — Story 1 done: found + purged `seen.json` from history
   (no secrets in it, no rotation needed), force-pushed rewritten `main` +
   `ciissues`. Next: Story 2 (install `gh` CLI).
+- 2026-08-18 — Story 2 done: `gh` 2.97.0 installed, authed as
+  `dayanandjha37` (scopes gist/read:org/repo), default repo set. Next:
+  Story 3 (`PROFILE_JSON` secret + manual dry run).
