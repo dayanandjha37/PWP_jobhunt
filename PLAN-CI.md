@@ -123,10 +123,15 @@ screening via openai-compatible/glm-5.2 + 2 drafts, piyush 2m43s), artifacts
 Merge to main. Per-user `dry_run=true` dispatch (primes cold per-user
 `seen.json` caches, no email), then `dry_run=false`.
 
-- [ ] Done
+- [x] Done
 
-*Test:* digests email per user with SMTP configured; piyush (no SMTP_PASS)
-still green with email-skip warning, digest in artifact.
+*Test:* PR #2 merged (7d070c7). Prime run 32170184564 green both users;
+proved per-user cache carry-over (second run: "nothing new today"). Cold-store
+run 32171548381: dayanand `[5/5] digest`, `emailed: 9` (2 drafted kits);
+piyush green. One transient GLM read-timeout retry (32171050708) — provider
+hiccup, not design. piyush email still pending local SMTP_PASS.
+
+*Session note:* 2026-08-18 — first real digest email delivered for dayanand.
 
 ## Story M5 — Legacy secret cleanup
 
