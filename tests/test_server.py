@@ -406,3 +406,55 @@ def test_set_config_key_appends_and_replaces(tmp_path):
 
     _set_config_key(p, "digest_file", "out/week digest.html")  # space -> quoted
     assert yaml.safe_load(p.read_text(encoding="utf-8"))["digest_file"] == "out/week digest.html"
+
+
+# ------------------------------------------------------------- pause + sync --
+def test_pause_toggle_writes_marker_and_kicks_sync(tmp_path, monkeypatch):
+    users = tmp_path / "users"
+    _seed(users)
+    kicked = []
+    monkeypatch.setattr("jobhunt.server._kick_sync", lambda: kicked.append(1) or True)
+    api = _Api(users)
+    try:
+        code, d = api.post("/api/pause", {"user": "alice", "paused": True})
+        assert code == 200 and d["paused"] is True
+        assert (users / "alice" / ".paused").exists()
+
+        code, d = api.get("/api/users")
+        assert d["users"][0]["paused"] is True     # surfaced for the UI button
+
+        code, d = api.post("/api/pause", {"user": "alice", "paused": False})
+        assert code == 200 and d["paused"] is False
+        assert not (users / "alice" / ".paused").exists()
+        assert len(kicked) == 2                    # each toggle pushes to GitHub
+    finally:
+        api.httpd.shutdown()
+
+
+def test_pause_rejects_sample_and_unknown_user(tmp_path, monkeypatch):
+    users = tmp_path / "users"
+    _seed(users)
+    (users / "sample").mkdir()
+    (users / "sample" / "config.yaml").write_text(CFG, encoding="utf-8")
+    monkeypatch.setattr("jobhunt.server._kick_sync", lambda: False)
+    api = _Api(users)
+    try:
+        assert api.post("/api/pause", {"user": "sample", "paused": True})[0] == 400
+        assert api.post("/api/pause", {"user": "nobody", "paused": True})[0] == 400
+    finally:
+        api.httpd.shutdown()
+
+
+def test_delete_user_kicks_sync(tmp_path, monkeypatch):
+    users = tmp_path / "users"
+    _seed(users)
+    kicked = []
+    monkeypatch.setattr("jobhunt.server._kick_sync", lambda: kicked.append(1) or True)
+    api = _Api(users)
+    try:
+        code, d = api.delete("/api/users?user=alice")
+        assert code == 200 and d["sync_started"] is True
+        assert not (users / "alice").exists()
+        assert kicked
+    finally:
+        api.httpd.shutdown()

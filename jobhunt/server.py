@@ -80,6 +80,14 @@ class ProcState:
 
 RUN = ProcState()    # python -m jobhunt run-all --user <name>
 BUILD = ProcState()  # python -m jobhunt profile  --user <name>
+SYNC = ProcState()   # python scripts/users_sync.py --yes
+
+
+def _kick_sync() -> bool:
+    """Push local users/ to GitHub (per-user secrets + USERS variable) in the
+    background, so pausing, resuming or deleting a user from the UI keeps CI
+    in step without a terminal round-trip."""
+    return SYNC.start("sync", [sys.executable, "scripts/users_sync.py", "--yes"])
 
 
 # ------------------------------------------------------------------ env spec --
@@ -237,7 +245,8 @@ def _users(users_dir: Path) -> list[dict]:
             if d.is_dir() and (d / "config.yaml").exists():
                 cfg = yaml.safe_load((d / "config.yaml").read_text(encoding="utf-8")) or {}
                 seen = d / cfg.get("seen_file", "seen.json")
-                out.append({"name": d.name, "tracked": Store(seen).stats()["tracked"]})
+                out.append({"name": d.name, "tracked": Store(seen).stats()["tracked"],
+                            "paused": (d / ".paused").exists()})
     return out
 
 
@@ -344,6 +353,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200 if "error" not in payload else 404, payload)
         elif path == "/api/build/status":
             self._json(200, BUILD.snapshot())
+        elif path == "/api/sync/status":
+            self._json(200, SYNC.snapshot())
         elif path == "/api/env":
             payload = self._env_payload(self._query().get("user", ""))
             self._json(200 if "error" not in payload else 404, payload)
@@ -379,6 +390,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._post_build(self._body())
             elif path == "/api/env":
                 self._post_env(self._body())
+            elif path == "/api/pause":
+                self._post_pause(self._body())
             elif path == "/api/config":
                 self._post_config(self._body())
             else:
@@ -413,7 +426,29 @@ class Handler(BaseHTTPRequestHandler):
                                           "— wait for it to finish"})
                 return
         shutil.rmtree(u)
-        self._json(200, {"ok": True, "deleted": u.name})
+        # Their per-user GitHub secrets are orphans now — prune them so CI
+        # forgets this user too (fire-and-forget; failure lands in the log).
+        started = _kick_sync()
+        self._json(200, {"ok": True, "deleted": u.name, "sync_started": started})
+
+    def _post_pause(self, body: dict) -> None:
+        """Toggle the .paused marker for a user and push the new USERS
+        variable to GitHub in the background. Secrets are kept either way —
+        resuming is just another toggle."""
+        u = _user_dir(self.users_dir, str(body.get("user") or ""))
+        if u is None:
+            raise ValueError(f"no user directory: {body.get('user')}")
+        if u.name == "sample":
+            raise ValueError("sample is the local scaffold — it never runs in CI")
+        paused = bool(body.get("paused", True))
+        marker = u / ".paused"
+        if paused:
+            marker.write_text("", encoding="utf-8")
+        else:
+            marker.unlink(missing_ok=True)
+        started = _kick_sync()
+        self._json(200, {"ok": True, "user": u.name, "paused": paused,
+                         "sync_started": started})
 
     def _store_for(self, body: dict) -> tuple[Store, str]:
         u = _user_dir(self.users_dir, str(body.get("user") or ""))

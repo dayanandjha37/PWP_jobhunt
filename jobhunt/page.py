@@ -111,6 +111,7 @@ PAGE = r"""<!doctype html>
   <select id="user" title="user"></select>
   <button class="btn ghost" id="add-user" title="create a user directory under users/">+ user</button>
   <button class="btn danger" id="remove-user" title="delete this user's directory under users/">– user</button>
+  <button class="btn ghost" id="pause-user" title="stop this user's CI digest without deleting anything">Pause CI</button>
   <div class="stats">
     <div class="tile"><b id="s-tracked">–</b><i>seen</i></div>
     <div class="tile"><b id="s-emailed">–</b><i>in digest</i></div>
@@ -134,7 +135,8 @@ PAGE = r"""<!doctype html>
 const $ = (s) => document.querySelector(s);
 const state = { user: null, tab: "todo", q: "", jobs: [], threshold: 7,
                 stats: {}, polling: null, buildPolling: null,
-                profile: null, envFields: null, configText: null };
+                profile: null, envFields: null, configText: null,
+                paused: false };
 
 // ---- helpers -------------------------------------------------------------
 function el(tag, attrs = {}, ...kids) {
@@ -180,7 +182,11 @@ async function loadUsers(preselect) {
     `${u.name} (${u.tracked})`));
   const wanted = preselect || new URLSearchParams(location.search).get("user");
   state.user = users.some((u) => u.name === wanted) ? wanted : users[0]?.name;
-  if (state.user) { sel.value = state.user; await loadTab(); }
+  if (state.user) {
+    sel.value = state.user;
+    updatePauseButton(users.find((u) => u.name === state.user)?.paused || false);
+    await loadTab();
+  }
   else $("#list").replaceChildren(el("div", { class: "empty" },
     "No users under users/ yet — add one with the “+ user” button above."));
 }
@@ -197,12 +203,29 @@ async function removeUser() {
   const name = state.user;
   const ok = confirm(`Delete users/${name}?\n` +
     "Everything inside goes too — config, resume, profile.json, .env secrets, " +
-    "the seen.json tracker and its application history. No undo.");
+    "the seen.json tracker and its application history. A background sync " +
+    "also deletes their GitHub CI secrets. No undo.");
   if (!ok) return;
   try {
     await api("/api/users?user=" + encodeURIComponent(name), { method: "DELETE" });
     state.user = null;
     await loadUsers();  // falls back to the first remaining user
+  } catch (e) { alert(e.message); }
+}
+function updatePauseButton(paused) {
+  state.paused = paused;
+  const b = $("#pause-user");
+  b.textContent = paused ? "Resume CI" : "Pause CI";
+  b.style.display = state.user === "sample" ? "none" : "";
+}
+async function pauseUser() {
+  if (!state.user) return;
+  try {
+    const d = await api("/api/pause", post({ user: state.user,
+                                             paused: !state.paused }));
+    updatePauseButton(d.paused);
+    msg(d.paused ? "CI paused — syncing USERS to GitHub…" :
+                   "CI resumed — syncing USERS to GitHub…");
   } catch (e) { alert(e.message); }
 }
 async function loadJobs() {
@@ -550,10 +573,14 @@ function msg(text, err) {
 
 // ---- wire up -------------------------------------------------------------
 $("#user").addEventListener("change", async (e) => {
-  state.user = e.target.value; await loadTab();
+  state.user = e.target.value;
+  const { users } = await api("/api/users");
+  updatePauseButton(users.find((u) => u.name === state.user)?.paused || false);
+  await loadTab();
 });
 $("#add-user").addEventListener("click", addUser);
 $("#remove-user").addEventListener("click", removeUser);
+$("#pause-user").addEventListener("click", pauseUser);
 $("#q").addEventListener("input", (e) => { state.q = e.target.value; render(); });
 $("#run-real").addEventListener("click", () => startRun(false));
 $("#run-mock").addEventListener("click", () => startRun(true));

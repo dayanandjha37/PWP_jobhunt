@@ -146,9 +146,15 @@ gh secret delete MAIL_TO
 
 Keep `LLM_API_KEY` + provider vars.
 
-- [ ] Done
+- [x] Done
 
-*Test:* `gh secret list` shows only the new scheme; one more dispatch green.
+*Test:* only legacy secret that ever existed was root `PROFILE_JSON` (root
+SMTP/MAIL_TO were never set); deleted with explicit user confirmation.
+`gh secret list` now shows only the per-user scheme + shared `LLM_API_KEY`.
+Dispatch 32172284358 green after cleanup.
+
+*Session note:* 2026-08-18 — secret store now exactly 14 entries, all
+per-user + shared key.
 
 ## Story M6 — Pause button in web UI
 
@@ -156,10 +162,14 @@ Keep `LLM_API_KEY` + provider vars.
 `python scripts/users_sync.py` (same subprocess pattern as the Run button).
 Template: per-user "Pause CI"/"Resume CI" button.
 
-- [ ] Done
+- [x] Done
 
-*Test:* click Pause on piyush → `gh variable get USERS` → `["dayanand"]` →
-dispatch runs ONE matrix job; resume restores two.
+*Test:* 152 pytest green (3 new). Live headless-UI loop: POST `/api/pause`
+piyush paused=true → sync ran → `USERS=["dayanand"]`; resumed → both back.
+Delete now kicks the same sync (secrets pruned). Button hidden for `sample`.
+
+*Session note:* 2026-08-18 — server.py +page.py: pause button, `/api/pause`,
+`/api/sync/status`, `_kick_sync()` on pause + delete.
 
 ## Story M7 — Local pause semantics + docs
 
