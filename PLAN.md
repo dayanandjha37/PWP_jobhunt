@@ -158,7 +158,8 @@ gh variable set LLM_BASE_URL --body "<base-url-if-used>"
 Re-run `gh workflow run daily.yml -f dry_run=true` and check that screening
 and drafting pass and the digest artifact contains scored jobs with drafts.
 
-- [ ] Done
+- [x] Done (superseded by PLAN-CI.md M2/M3: shared `LLM_API_KEY` secret +
+  provider vars set; screening + drafting green via glm-5.2 in run 32169598174)
 
 *Learned:* how `jobhunt/providers.py:resolve()` maps env vars → provider.
 
@@ -177,7 +178,9 @@ Gmail app password: Google Account → Security → 2-Step Verification →
 App passwords. Note: a mail failure does NOT fail the job — `cli.py` catches
 it (~line 290) and keeps the digest on disk/artifact.
 
-- [ ] Done
+- [x] Done (superseded by PLAN-CI.md M2/M4: per-user SMTP secrets via
+  users_sync, first real digest email delivered for dayanand 2026-08-18;
+  piyush still pending a local SMTP_PASS before their digest emails)
 
 *Learned:* SMTP auth, app passwords, why mail errors are non-fatal.
 
@@ -239,3 +242,9 @@ extended with pause + delete-sync). Full story plan now lives in
   `users/dayanand/profile.json`, dry run 32134367735 — profile write,
   fetch, prefilter, artifact all green; failed only on missing
   `ANTHROPIC_API_KEY`. Next: Story 4 (LLM key secret).
+- 2026-08-19 — Stories 4+5 ticked as superseded: PLAN-CI.md M1-M7 (multi-
+  user CI) already did the work — shared `LLM_API_KEY` + provider vars,
+  per-user SMTP secrets, first real email 2026-08-18. Story 6 cache half
+  verified (run 32172284358: restore-key cache hit both users, `tracking 9`
+  / `tracking 6 postings`, both digests "nothing new today" — no repeats).
+  Cron half due 06:00 IST today; check pending.

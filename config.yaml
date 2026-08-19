@@ -103,3 +103,7 @@ profile_file: profile.json
 seen_file: seen.json
 digest_file: out/digest.html
 tracker_csv: out/tracker.csv
+
+# Indeed jobs scraped by NaukriResumeUploader, one JSON per line. Absent or
+# empty = source disabled; a set path with no file yet is just zero jobs.
+indeed_file: /Users/Shared/Files From d.localized/Ollama/Job-application-assistant/indeed-jobs/indeed-jobs.jsonl

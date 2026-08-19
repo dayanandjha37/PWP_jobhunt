@@ -6,6 +6,7 @@ regex that silently matches nothing.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -17,8 +18,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jobhunt import mock
-from jobhunt.fetch import (fetch_smartrecruiters, parse_ashby, parse_greenhouse,
-                           parse_lever, parse_smartrecruiters, strip_html)
+from jobhunt.fetch import (fetch_indeed, fetch_smartrecruiters, parse_ashby,
+                           parse_greenhouse, parse_indeed, parse_lever,
+                           parse_smartrecruiters, strip_html)
 from jobhunt.mock import fetch_all_mock
 from jobhunt.prefilter import prefilter
 
@@ -182,6 +184,62 @@ def test_fetch_smartrecruiters_pages_and_fills_descriptions():
     assert detail_urls == [
         "https://api.smartrecruiters.com/v1/companies/Experian/postings/a1",
         "https://api.smartrecruiters.com/v1/companies/Experian/postings/a3"]
+
+
+# ----------------------------------------------------------------- indeed ---
+
+INDEED_ROWS = [
+    # camelCase IndeedJob shape, exactly what the Java scraper writes
+    {"jobId": "indeed:abc123", "ats": "indeed", "company": "Acme",
+     "title": "Backend Engineer (Java)", "location": "Noida, India",
+     "url": "https://in.indeed.com/viewjob?jk=abc123",
+     "description": "Spring Boot, Kafka, REST.",
+     "salary": None, "postedAt": None,
+     "scrapedAt": "2026-08-19T09:38:00"},
+    {"jobId": "indeed:def456", "ats": "indeed", "company": "Globex",
+     "title": "Platform Engineer", "location": "Remote",
+     "url": "https://in.indeed.com/viewjob?jk=def456",
+     "description": "Kubernetes, Terraform.",
+     "salary": "₹12L – ₹20L a year", "postedAt": "2026-08-15T00:00:00",
+     "scrapedAt": "2026-08-19T09:38:00"},
+]
+
+
+def test_parse_indeed_maps_every_field():
+    jobs = parse_indeed(INDEED_ROWS)
+    assert len(jobs) == 2
+    j = jobs[0]
+    assert j.job_id == "indeed:abc123"
+    assert j.ats == "indeed"
+    assert j.company == "Acme"
+    assert j.title == "Backend Engineer (Java)"
+    assert j.location == "Noida, India"
+    assert j.url.endswith("jk=abc123")
+    assert "Spring Boot" in j.description
+    assert j.posted_at is None and j.salary is None   # nullable extras degrade
+    assert jobs[1].salary == "₹12L – ₹20L a year"
+    assert jobs[1].posted_at == "2026-08-15T00:00:00"
+
+
+def test_parse_indeed_normalizes_a_bare_jk_to_the_namespaced_id():
+    jobs = parse_indeed([{"jobId": "xyz789", "title": "Backend Engineer"}])
+    assert jobs[0].job_id == "indeed:xyz789"
+
+
+def test_parse_indeed_drops_rows_that_cannot_dedupe():
+    assert parse_indeed([{"title": "no id"}, "not a dict", None]) == []
+
+
+def test_fetch_indeed_missing_file_is_empty_not_a_crash(tmp_path):
+    assert fetch_indeed(tmp_path / "nope.jsonl") == []
+
+
+def test_fetch_indeed_skips_malformed_lines(tmp_path):
+    f = tmp_path / "indeed-jobs.jsonl"
+    good = json.dumps(INDEED_ROWS[0])
+    f.write_text("{not json\n\n" + good + "\n[1, 2]\n", encoding="utf-8")
+    jobs = fetch_indeed(f)
+    assert [j.job_id for j in jobs] == ["indeed:abc123"]
 
 
 # -------------------------------------------------------------- prefilter ---

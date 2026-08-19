@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import time
 from dataclasses import dataclass, asdict, field
+from pathlib import Path
 from typing import Any, Iterable
 
 import requests
@@ -152,6 +154,33 @@ def _smartrecruiters_jd(body: Any) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def parse_indeed(rows: Iterable[Any]) -> list[Job]:
+    """JSONL rows written by the Indeed scraper (NaukriResumeUploader),
+    camelCase IndeedJob shape. Rows without a jobId are dropped — an id-less
+    row can never dedupe against seen.json."""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        jk = str(r.get("jobId") or r.get("jk") or "").strip()
+        if not jk:
+            continue
+        if not jk.startswith("indeed:"):
+            jk = f"indeed:{jk}"
+        out.append(Job(
+            job_id=jk,
+            ats="indeed",
+            company=str(r.get("company") or "Unknown").strip(),
+            title=str(r.get("title") or "").strip(),
+            location=str(r.get("location") or "").strip(),
+            url=str(r.get("url") or ""),
+            description=str(r.get("description") or "").strip(),
+            posted_at=r.get("postedAt"),
+            salary=r.get("salary"),
+        ))
+    return out
+
+
 ENDPOINTS = {
     "greenhouse": ("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true", parse_greenhouse),
     "lever":      ("https://api.lever.co/v0/postings/{slug}?mode=json", parse_lever),
@@ -231,6 +260,30 @@ def fetch_board(ats: str, slug: str, company: str | None = None,
     except Exception as e:  # dead slug, rate limit, network blip
         print(f"  ! {ats}/{slug} -> {type(e).__name__}: {e}")
         return []
+
+
+def fetch_indeed(path: str | Path) -> list[Job]:
+    """Read the shared Indeed JSONL export (one job per line, written by the
+    Java scraper). Returns [] on a missing file or bad lines — the same
+    never-raise contract as fetch_board."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        print(f"  ! indeed -> {type(e).__name__}: {e}")
+        return []
+    rows: list[Any] = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            rows.append(json.loads(s))
+        except json.JSONDecodeError:
+            print(f"  ! indeed: skipping malformed line in {p.name}")
+    return parse_indeed(rows)
 
 
 def fetch_all(companies: Iterable[dict], sleep: float = 0.25) -> list[Job]:
