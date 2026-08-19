@@ -17,7 +17,7 @@ from . import digest as digest_mod
 from . import extract
 from . import filtergen
 from . import ingest, llm, mailer
-from .fetch import fetch_all
+from .fetch import fetch_all, fetch_indeed
 from .mock import fetch_all_mock
 from .prefilter import prefilter
 from .providers import LLMError, resolve
@@ -198,6 +198,19 @@ def cmd_run(args) -> int:
             print("companies.yaml has no entries")
             return 1
         jobs = fetch_all(companies)
+
+    # Indeed jobs scraped by NaukriResumeUploader, one JSON per line in the
+    # shared JSONL (indeed_file). Absent/empty = source disabled, like the
+    # inbox below; a set path with no file yet is just zero jobs. From here
+    # they flow through prefilter/screen/digest with no special-casing —
+    # seen.json dedupes repeats across runs.
+    indeed_file = cfg.get("indeed_file")
+    if indeed_file:
+        indeed_jobs = fetch_indeed(indeed_file)
+        if indeed_jobs:
+            print(f"  indeed: imported {len(indeed_jobs)} job(s) from "
+                  f"{Path(indeed_file).name}")
+        jobs = jobs + indeed_jobs
 
     # jobs exported by the Indeed scraper (file drop into inbox/)
     inbox_dir = cfg.get("inbox_dir")
