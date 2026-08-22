@@ -230,7 +230,9 @@ def cmd_run(args) -> int:
     jobs = prefilter(jobs, filters)
     passed_filters = len(jobs)
     jobs = store.unseen(jobs)
-    print(f"  new since last run: {len(jobs)}")
+    retries = sum(1 for j in jobs if j.job_id in store.data)  # never-emailed requeues
+    print(f"  new since last run: {len(jobs) - retries}"
+          + (f" (+{retries} retry)" if retries else ""))
     candidates = len(jobs)
     if args.limit:
         jobs = jobs[:args.limit]

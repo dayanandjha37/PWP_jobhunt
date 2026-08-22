@@ -112,14 +112,16 @@ def test_missing_or_empty_inbox_returns_empty(tmp_path):
 
 def test_ingested_jobs_dedupe_via_seen_store(tmp_path):
     """The whole point of the id format: seen.json works unmodified.
-    Simulate a re-export of the same job after it was recorded as seen."""
+    Simulate a re-export of the same job after it was delivered (a job
+    recorded emailed=False comes back — that requeue has its own tests
+    in test_store.py)."""
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     write(inbox, "indeed-a1b2c3d4.json", export())
 
     from jobhunt.store import Store
     store = Store(tmp_path / "seen.json")
-    store.record(store.unseen(load_inbox(inbox)), emailed=False)
+    store.record(store.unseen(load_inbox(inbox)), emailed=True)
 
     archived = inbox / "archive" / "indeed-a1b2c3d4.json"
     (inbox / "indeed-a1b2c3d4.json").write_text(

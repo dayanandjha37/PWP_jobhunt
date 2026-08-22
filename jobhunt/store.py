@@ -20,12 +20,19 @@ class Store:
                 print(f"  ! {self.path} corrupt, starting fresh")
 
     def unseen(self, jobs: list[Job]) -> list[Job]:
-        return [j for j in jobs if j.job_id not in self.data]
+        """Jobs to run this pass: never seen, or seen but never emailed —
+        a failed (or unsent) delivery requeues until it lands."""
+        return [j for j in jobs
+                if j.job_id not in self.data
+                or not self.data[j.job_id].get("emailed")]
 
     def record(self, jobs: list[Job], emailed: bool) -> None:
+        """Upsert: a requeued row keeps first_seen/applied, and once
+        delivered stays delivered (old OR new); the rerun refreshes
+        score/reason/draft for whatever it actually produced."""
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for j in jobs:
-            self.data.setdefault(j.job_id, {
+            row = self.data.setdefault(j.job_id, {
                 "first_seen": now,
                 "company": j.company,
                 "title": j.title,
@@ -34,10 +41,17 @@ class Store:
                 "score": j.score,
                 "reason": j.reason,
                 "draft": j.draft or {},
-                "emailed": emailed,
+                "emailed": False,
                 "applied": False,
                 "applied_on": None,
             })
+            row["emailed"] = row.get("emailed", False) or emailed
+            if j.score is not None:
+                row["score"] = j.score
+            if j.reason is not None:
+                row["reason"] = j.reason
+            if j.draft:
+                row["draft"] = j.draft
         self.save()
 
     def mark_applied(self, job_id: str) -> bool:
